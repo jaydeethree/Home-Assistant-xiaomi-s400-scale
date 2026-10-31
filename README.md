@@ -12,7 +12,44 @@ Unlike passive advertisement scanning (which only emits a final reading 3–5s *
 - **Multi-scale** — one `MiCloudClient` shared across many `S400Scale` instances, each in its own asyncio task
 - **Auto token rotation** — if Mi Home re-pairs and rotates the token, the library detects HMAC mismatch and refetches from Mi Cloud automatically
 
-## Install
+- **Home Assistant integration** — HACS-compatible custom component (`custom_components/xiaomi_s400_live`) using Home Assistant's Bluetooth stack + `bleak-retry-connector`
+
+## Home Assistant Integration
+
+### 1. Extract your 12-byte BLE Login Token
+
+Run [Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor) once to retrieve the scale's **Bluetooth MAC** and **24-hex-character `TOKEN`** (12 bytes).
+
+### 2. Install the Integration
+
+- **Via HACS (Custom Repository)**:
+  1. Open **HACS → Integrations → ⋮ (top right) → Custom repositories**.
+  2. Add this repository URL with category **Integration**.
+  3. Install **Xiaomi Body Composition Scale S400 (Live)** and restart Home Assistant.
+- **Manual**:
+  1. Copy `custom_components/xiaomi_s400_live` into your Home Assistant `<config>/custom_components/` directory.
+  2. Restart Home Assistant.
+
+### 3. Configure in Home Assistant UI
+
+- Step on the scale to wake it up (Home Assistant may auto-discover it under **Settings → Devices & Services**), or click **Add Integration → Xiaomi Scale S400 Live**.
+- Enter the scale's **Bluetooth MAC address** (`AA:BB:CC:DD:EE:FF`) and the **24-hex-character BLE Login Token**.
+- If the scale is ever re-paired in Mi Home and its token rotates, you can update the token via **Configure** on the integration card (or the automatic Re-authenticate prompt).
+
+### Entities Created
+
+| Entity | Type | Description |
+| --- | --- | --- |
+| `sensor.*_live_weight` | Sensor (`kg`) | Real-time weight stream (~0.3s updates while standing on the scale) |
+| `sensor.*_weight` | Sensor (`kg`) | Final locked weight reading (restored across HA restarts; includes `profile_id` and `device_timestamp` attributes) |
+| `sensor.*_impedance` | Sensor (`Ω`) | Final high-frequency bio-electrical impedance |
+| `sensor.*_low_frequency_impedance` | Sensor (`Ω`) | Final low-frequency bio-electrical impedance |
+| `binary_sensor.*_weight_stable` | Binary Sensor | `on` when the live weight measurement locks/stabilizes during a weigh-in |
+| `binary_sensor.*_connected` | Binary Sensor | Diagnostic connectivity state (`on` while an authenticated GATT session is active) |
+
+Additionally, a `xiaomi_s400_live_measurement` event is fired on the Home Assistant event bus whenever a final measurement completes.
+
+## Python Library Install
 
 ```bash
 pip install xiaomi-s400-live              # core (bring your own bindkey + token)

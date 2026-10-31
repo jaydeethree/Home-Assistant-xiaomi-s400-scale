@@ -1,0 +1,19 @@
+{
+  "domain": "xiaomi_s400_scale",
+  "name": "Xiaomi S400 Scale",
+  "bluetooth": [
+    {
+      "service_uuid": "0000fe95-0000-1000-8000-00805f9b34fb",
+      "local_name": "Xiaomi S400 Scale*",
+      "connectable": true
+    }
+  ],
+  "codeowners": ["@jaydeethree"],
+  "config_flow": true,
+  "dependencies": ["bluetooth_adapters"],
+  "documentation": "https://github.com/jaydeethree/Home-Assistant-xiaomi-s400-scale",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/jaydeethree/Home-Assistant-xiaomi-s400-scale/issues",
+  "requirements": ["bleak-retry-connector>=3.5.0"],
+  "version": "0.1.0"
+}

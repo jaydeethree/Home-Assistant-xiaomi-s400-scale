@@ -13,10 +13,12 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 @dataclass(frozen=True)
 class SessionKeys:
-    dev_key: bytes  # 16B - device → app encryption key
-    app_key: bytes  # 16B - app → device encryption key
-    dev_iv:  bytes  # 4B
-    app_iv:  bytes  # 4B
+    """Session keys derived during Mi Home v2 BLE login."""
+
+    dev_key: bytes  # 16B - device -> app encryption key
+    app_key: bytes  # 16B - app -> device encryption key
+    dev_iv: bytes   # 4B
+    app_iv: bytes   # 4B
 
 
 def derive_login_keys(token: bytes, app_rand: bytes, dev_rand: bytes) -> SessionKeys:
@@ -38,6 +40,7 @@ def derive_login_keys(token: bytes, app_rand: bytes, dev_rand: bytes) -> Session
 
 
 def hmac_sha256(key: bytes, data: bytes) -> bytes:
+    """Compute HMAC-SHA256."""
     h = HMAC(key, hashes.SHA256())
     h.update(data)
     return h.finalize()
@@ -58,14 +61,3 @@ def decrypt_cmtp(keys: SessionKeys, raw: bytes) -> bytes | None:
         return AESCCM(keys.dev_key, tag_length=4).decrypt(nonce, ct, None)
     except Exception:
         return None
-
-
-def encrypt_for_device(keys: SessionKeys, iter_counter: int, plaintext: bytes) -> bytes:
-    """Encrypt a plaintext command for sending to device.
-
-    Returns [iter_LE_2B][ciphertext_with_4B_tag]. Caller wraps in framing.
-    """
-    it_bytes = iter_counter.to_bytes(2, "little")
-    nonce = keys.app_iv + bytes(4) + it_bytes + bytes(2)
-    ct = AESCCM(keys.app_key, tag_length=4).encrypt(nonce, plaintext, None)
-    return it_bytes + ct

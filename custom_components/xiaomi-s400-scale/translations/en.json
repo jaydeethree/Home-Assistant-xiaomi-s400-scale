@@ -1,0 +1,77 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Set up Xiaomi S400 Scale",
+        "description": "Enter the scale's Bluetooth MAC address and its 12-byte (24 hex characters) BLE login token from Xiaomi-cloud-tokens-extractor.",
+        "data": {
+          "address": "Bluetooth MAC Address (AA:BB:CC:DD:EE:FF)",
+          "token": "BLE Login Token (24 hex chars)",
+          "name": "Device Name"
+        }
+      },
+      "bluetooth_confirm": {
+        "title": "Configure {name}",
+        "description": "Discovered Xiaomi S400 Scale at `{address}`. Enter its 12-byte (24 hex characters) BLE login token from Xiaomi-cloud-tokens-extractor.",
+        "data": {
+          "name": "Device Name",
+          "token": "BLE Login Token (24 hex chars)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Xiaomi S400 Scale",
+        "description": "The BLE login token for `{address}` was rejected (tokens rotate if the scale is re-paired in Mi Home). Enter the updated 24-hex-character BLE login token.",
+        "data": {
+          "token": "BLE Login Token (24 hex chars)"
+        }
+      }
+    },
+    "error": {
+      "invalid_mac": "Invalid Bluetooth MAC address (expected AA:BB:CC:DD:EE:FF).",
+      "invalid_token": "Token must be exactly 24 hexadecimal characters (12 bytes)."
+    },
+    "abort": {
+      "already_configured": "This scale is already configured.",
+      "reauth_successful": "Re-authentication was successful."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Xiaomi S400 Scale Options",
+        "description": "Update the 12-byte (24 hex characters) BLE login token.",
+        "data": {
+          "token": "BLE Login Token (24 hex chars)"
+        }
+      }
+    },
+    "error": {
+      "invalid_token": "Token must be exactly 24 hexadecimal characters (12 bytes)."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "live_weight": {
+        "name": "Live Weight"
+      },
+      "weight": {
+        "name": "Weight"
+      },
+      "impedance": {
+        "name": "Impedance"
+      },
+      "impedance_low": {
+        "name": "Low-Frequency Impedance"
+      }
+    },
+    "binary_sensor": {
+      "stable": {
+        "name": "Weight Stable"
+      },
+      "connected": {
+        "name": "Connected"
+      }
+    }
+  }
+}
