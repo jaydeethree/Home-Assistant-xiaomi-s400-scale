@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 from cryptography.hazmat.primitives.hmac import HMAC
@@ -29,7 +28,6 @@ def derive_login_keys(token: bytes, app_rand: bytes, dev_rand: bytes) -> Session
         length=64,
         salt=salt,
         info=b"mible-login-info",
-        backend=default_backend(),
     ).derive(token)
     return SessionKeys(
         dev_key=derived[0:16],
