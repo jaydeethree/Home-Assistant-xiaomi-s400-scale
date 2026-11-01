@@ -12,15 +12,15 @@ from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
     async_discovered_service_info,
 )
-from homeassistant.config_entries import (
-    ConfigEntry,
-    ConfigFlow,
-    ConfigFlowResult,
-    OptionsFlow,
-)
-from homeassistant.const import CONF_ADDRESS, CONF_NAME
-from homeassistant.core import callback
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.const import CONF_ADDRESS
 from homeassistant.helpers.device_registry import format_mac
+from homeassistant.helpers.selector import (
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 
 from .const import CONF_TOKEN, DOMAIN
 from .protocol import MIBEACON_SERVICE_UUID
@@ -34,8 +34,7 @@ def _clean_token(raw: str) -> str:
 
 
 def _clean_mac(raw: str) -> str:
-    cleaned = format_mac(raw.strip()).upper()
-    return cleaned
+    return format_mac(raw.strip()).upper()
 
 
 class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -46,13 +45,6 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         """Initialize the config flow."""
         self._discovery_info: BluetoothServiceInfoBleak | None = None
-        self._reauth_entry: ConfigEntry | None = None
-
-    @staticmethod
-    @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
-        """Get the options flow for this handler."""
-        return XiaomiS400ScaleOptionsFlow()
 
     async def async_step_bluetooth(
         self, discovery_info: BluetoothServiceInfoBleak
@@ -62,7 +54,8 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
         self._abort_if_unique_id_configured()
         self._discovery_info = discovery_info
         self.context["title_placeholders"] = {
-            "name": discovery_info.name or f"Xiaomi S400 Scale ({discovery_info.address[-5:]})"
+            "name": discovery_info.name
+            or f"Xiaomi S400 Scale ({discovery_info.address[-5:]})"
         }
         return await self.async_step_bluetooth_confirm()
 
@@ -73,33 +66,28 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
         assert self._discovery_info is not None
         errors: dict[str, str] = {}
 
+        default_name = (
+            self._discovery_info.name
+            or f"Xiaomi S400 Scale ({self._discovery_info.address[-5:]})"
+        )
+
         if user_input is not None:
             token = _clean_token(user_input[CONF_TOKEN])
             if not HEX_24_REGEX.match(token):
                 errors[CONF_TOKEN] = "invalid_token"
             else:
-                title = (
-                    user_input.get(CONF_NAME)
-                    or self._discovery_info.name
-                    or f"Xiaomi S400 Scale ({self._discovery_info.address[-5:]})"
-                )
                 return self.async_create_entry(
-                    title=title,
+                    title=default_name,
                     data={
                         CONF_ADDRESS: self._discovery_info.address.upper(),
                         CONF_TOKEN: token,
                     },
                 )
 
-        default_name = (
-            self._discovery_info.name
-            or f"Xiaomi S400 Scale ({self._discovery_info.address[-5:]})"
-        )
         return self.async_show_form(
             step_id="bluetooth_confirm",
             data_schema=vol.Schema(
                 {
-                    vol.Optional(CONF_NAME, default=default_name): str,
                     vol.Required(CONF_TOKEN): str,
                 }
             ),
@@ -128,20 +116,15 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             if not errors:
                 await self.async_set_unique_id(address, raise_on_progress=False)
                 self._abort_if_unique_id_configured()
-                title = (
-                    user_input.get(CONF_NAME, "").strip()
-                    or f"Xiaomi S400 Scale ({address[-5:]})"
-                )
                 return self.async_create_entry(
-                    title=title,
+                    title=f"Xiaomi S400 Scale ({address[-5:]})",
                     data={
                         CONF_ADDRESS: address,
                         CONF_TOKEN: token,
                     },
                 )
 
-        # Pre-fill MAC if a connectable MiBeacon scale is currently discovered
-        default_address = ""
+        options: list[SelectOptionDict] = []
         current_ids = self._async_current_ids()
         for info in async_discovered_service_info(self.hass, connectable=True):
             addr = info.address.upper()
@@ -152,16 +135,27 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                 or "s400" in (info.name or "").lower()
                 or "scale" in (info.name or "").lower()
             ):
-                default_address = addr
-                break
+                label = f"{info.name} ({addr})" if info.name else addr
+                options.append(SelectOptionDict(value=addr, label=label))
+
+        address_selector: Any = (
+            SelectSelector(
+                SelectSelectorConfig(
+                    options=options,
+                    custom_value=True,
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            )
+            if options
+            else str
+        )
 
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_ADDRESS, default=default_address): str,
+                    vol.Required(CONF_ADDRESS): address_selector,
                     vol.Required(CONF_TOKEN): str,
-                    vol.Optional(CONF_NAME, default="Xiaomi S400 Scale"): str,
                 }
             ),
             errors=errors,
@@ -171,16 +165,13 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
         self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
         """Handle reauthorization when the scale's BLE token rotates."""
-        self._reauth_entry = self.hass.config_entries.async_get_entry(
-            self.context["entry_id"]
-        )
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Confirm new BLE login token."""
-        assert self._reauth_entry is not None
+        reauth_entry = self._get_reauth_entry()
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -189,7 +180,7 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors[CONF_TOKEN] = "invalid_token"
             else:
                 return self.async_update_reload_and_abort(
-                    self._reauth_entry,
+                    reauth_entry,
                     data_updates={CONF_TOKEN: token},
                 )
 
@@ -201,19 +192,16 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                 }
             ),
             description_placeholders={
-                "address": self._reauth_entry.data[CONF_ADDRESS],
+                "address": reauth_entry.data[CONF_ADDRESS],
             },
             errors=errors,
         )
 
-
-class XiaomiS400ScaleOptionsFlow(OptionsFlow):
-    """Handle options flow to update the BLE login token."""
-
-    async def async_step_init(
+    async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage the options."""
+        """Handle reconfiguration to update the BLE login token."""
+        reconfigure_entry = self._get_reconfigure_entry()
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -221,20 +209,23 @@ class XiaomiS400ScaleOptionsFlow(OptionsFlow):
             if not HEX_24_REGEX.match(token):
                 errors[CONF_TOKEN] = "invalid_token"
             else:
-                return self.async_create_entry(
-                    title="",
-                    data={CONF_TOKEN: token},
+                return self.async_update_reload_and_abort(
+                    reconfigure_entry,
+                    data_updates={CONF_TOKEN: token},
                 )
 
-        current_token = self.config_entry.options.get(
-            CONF_TOKEN, self.config_entry.data.get(CONF_TOKEN, "")
-        )
         return self.async_show_form(
-            step_id="init",
+            step_id="reconfigure",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_TOKEN, default=current_token): str,
+                    vol.Required(
+                        CONF_TOKEN,
+                        default=reconfigure_entry.data.get(CONF_TOKEN, ""),
+                    ): str,
                 }
             ),
+            description_placeholders={
+                "address": reconfigure_entry.data[CONF_ADDRESS],
+            },
             errors=errors,
         )
