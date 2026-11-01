@@ -13,6 +13,7 @@ Unlike passive BLE advertisement scanning (which only emits a final reading seve
 
 - **Token-Based Authentication Only**: This integration **only** supports manual token-based authentication. Automatic cloud login and cloud credential fetching are not supported. You must extract your scale's 12-byte (24-hex-character) BLE login token using [Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor).
 - **Body Composition Removed**: On-device body composition calculations (BMI, body fat %, muscle mass, water, visceral fat, etc.) have been completely removed from this integration to keep it focused and lightweight. If you want body composition calculations in Home Assistant from your weight and impedance values, consider using the [BodyMiscale](https://github.com/dckiller51/bodymiscale) custom integration.
+- **Coexistence with Built-in `xiaomi_ble`**: Home Assistant's built-in Xiaomi BLE (`xiaomi_ble`) integration may also discover the S400. Because `xiaomi_ble` only passively parses BLE advertisements and never opens an active GATT connection, the two integrations do not conflict.
 - **Early Development**: This project is still in early development and not intended for production environments.
 
 ---
@@ -24,7 +25,7 @@ Unlike passive BLE advertisement scanning (which only emits a final reading seve
 - **Final weight reading** — locked reading retained and restored across Home Assistant restarts
 - **Impedance sensors** — bio-electrical impedance and low-frequency impedance readings from the dual-frequency sensors
 - **Event firing** — fires a `xiaomi_s400_scale_measurement` event on the Home Assistant bus upon completion of a measurement
-- **Re-authentication flow** — easily update the BLE login token if the scale is re-paired in the Mi Home app
+- **Re-authentication & Reconfiguration** — easily update the BLE login token if the scale is re-paired in the Mi Home app
 
 ---
 
@@ -51,7 +52,7 @@ Because the scale requires Mi Home v2 cryptographic authentication before it wil
 ### Manual Installation
 
 1. Download or clone this repository.
-2. Copy the `custom_components/xiaomi-s400-scale` folder into your Home Assistant `<config>/custom_components/` directory.
+2. Copy the `custom_components/xiaomi_s400_scale` folder into your Home Assistant `<config>/custom_components/` directory.
 3. Restart Home Assistant.
 
 ---
@@ -61,13 +62,13 @@ Because the scale requires Mi Home v2 cryptographic authentication before it wil
 1. Step on the scale to wake it up and begin BLE advertising.
 2. In Home Assistant, go to **Settings** → **Devices & Services**.
    - If auto-discovered via Bluetooth, click **Configure**.
-   - Otherwise, click **Add Integration**, search for **Xiaomi S400 Scale**, and enter your scale's Bluetooth MAC address.
+   - Otherwise, click **Add Integration**, search for **Xiaomi S400 Scale**, and select your scale or enter its Bluetooth MAC address.
 3. Enter the 24-character hex **BLE Login Token**.
 4. Submit the form to complete the setup.
 
 ### Token Updates / Re-authentication
 
-If the scale is factory reset or re-paired in the Mi Home app, the BLE token rotates. You can update the token anytime by clicking **Configure** on the integration card or by following the automatic re-authentication prompt if Home Assistant detects an authentication failure.
+If the scale is factory reset or re-paired in the Mi Home app, the BLE token rotates. You can update the token anytime by clicking **Reconfigure** on the integration entry menu or by following the automatic re-authentication prompt if Home Assistant detects an authentication failure.
 
 ---
 
@@ -75,10 +76,10 @@ If the scale is factory reset or re-paired in the Mi Home app, the BLE token rot
 
 | Entity | Domain | Description |
 | --- | --- | --- |
-| `sensor.<device>_live_weight` | Sensor (`kg`) | Real-time weight stream updating every ~0.3s while on the scale |
+| `sensor.<device>_live_weight` | Sensor (`kg`) | Real-time weight stream updating every ~0.3s while on the scale (`unknown` when disconnected) |
 | `sensor.<device>_weight` | Sensor (`kg`) | Final locked weight measurement (restored across HA restarts) |
-| `sensor.<device>_impedance` | Sensor (`Ω`) | Bio-electrical impedance measurement |
-| `sensor.<device>_low_frequency_impedance` | Sensor (`Ω`) | Low-frequency bio-electrical impedance measurement |
+| `sensor.<device>_impedance` | Sensor (`ohm`) | Bio-electrical impedance measurement |
+| `sensor.<device>_low_frequency_impedance` | Sensor (`ohm`) | Low-frequency bio-electrical impedance measurement |
 | `binary_sensor.<device>_weight_stable` | Binary Sensor | Indicates when the live weight measurement has stabilized |
 | `binary_sensor.<device>_connected` | Binary Sensor | Diagnostic sensor indicating an active authenticated BLE connection |
 
