@@ -1,186 +1,98 @@
-# xiaomi-s400-live
+# Xiaomi S400 Scale (Live) for Home Assistant
 
-Real-time weight + body composition from the **Xiaomi Body Composition Scale S400** (MJTZC01YM / `yunmai.scales.ms104`) over BLE, in Python.
+> [!WARNING]
+> **Early Work in Progress**: This integration is currently in early experimental development and is **not ready for general use yet**. Expect breaking changes, bugs, or connection quirks.
 
-Unlike passive advertisement scanning (which only emits a final reading 3–5s **after** the user stops moving), this library authenticates to the scale with the Mi Home v2 protocol and streams live weight via the proprietary GATT command channel.
+A custom Home Assistant integration for the **Xiaomi Body Composition Scale S400** (model `MJTZC01YM` / `yunmai.scales.ms104`), converted from [nokistin/xiaomi-s400-live](https://github.com/nokistin/xiaomi-s400-live).
+
+Unlike passive BLE advertisement scanning (which only emits a final reading several seconds after stepping off), this integration authenticates to the scale with the Mi Home v2 protocol over BLE and streams live weight readings in real time while standing on the scale.
+
+---
+
+## Important Notes & Limitations
+
+- **Token-Based Authentication Only**: This integration **only** supports manual token-based authentication. Automatic cloud login and cloud credential fetching are not supported. You must extract your scale's 12-byte (24-hex-character) BLE login token using [Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor).
+- **Body Composition Removed**: On-device body composition calculations (BMI, body fat %, muscle mass, water, visceral fat, etc.) have been completely removed from this integration to keep it focused and lightweight. If you want body composition calculations in Home Assistant from your weight and impedance values, consider using the [BodyMiscale](https://github.com/dckiller51/bodymiscale) custom integration.
+- **Early Development**: This project is still in early development and not intended for production environments.
+
+---
 
 ## Features
 
-- **Live weight stream** — every ~0.3s while standing on the scale, with a `stable` flag once the measurement settles
-- **Final measurement** — full dump including weight, dual impedance, device timestamp, profile id
-- **Body composition** — BMI, fat%, muscle, bone, water, visceral fat, metabolic age (formulas ported from `mnm-matin/miscale`)
-- **Multi-scale** — one `MiCloudClient` shared across many `S400Scale` instances, each in its own asyncio task
-- **Auto token rotation** — if Mi Home re-pairs and rotates the token, the library detects HMAC mismatch and refetches from Mi Cloud automatically
+- **Live weight stream** — updates every ~0.3s while standing on the scale
+- **Weight Stable indicator** — binary sensor indicating when the measurement has stabilized/settled
+- **Final weight reading** — locked reading retained and restored across Home Assistant restarts
+- **Impedance sensors** — bio-electrical impedance and low-frequency impedance readings from the dual-frequency sensors
+- **Event firing** — fires a `xiaomi_s400_scale_measurement` event on the Home Assistant bus upon completion of a measurement
+- **Re-authentication flow** — easily update the BLE login token if the scale is re-paired in the Mi Home app
 
-- **Home Assistant integration** — HACS-compatible custom component (`custom_components/xiaomi_s400_live`) using Home Assistant's Bluetooth stack + `bleak-retry-connector`
+---
 
-## Home Assistant Integration
+## Getting Your BLE Login Token
 
-### 1. Extract your 12-byte BLE Login Token
+Because the scale requires Mi Home v2 cryptographic authentication before it will stream data:
 
-Run [Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor) once to retrieve the scale's **Bluetooth MAC** and **24-hex-character `TOKEN`** (12 bytes).
+1. Use [Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor) to log in to your Xiaomi account.
+2. Locate your S400 scale in the extracted output.
+3. Note the **Bluetooth MAC address** (e.g. `AA:BB:CC:DD:EE:FF`) and the **24-hex-character Token** (`TOKEN` / 12 bytes).
 
-### 2. Install the Integration
+---
 
-- **Via HACS (Custom Repository)**:
-  1. Open **HACS → Integrations → ⋮ (top right) → Custom repositories**.
-  2. Add this repository URL with category **Integration**.
-  3. Install **Xiaomi Body Composition Scale S400 (Live)** and restart Home Assistant.
-- **Manual**:
-  1. Copy `custom_components/xiaomi_s400_live` into your Home Assistant `<config>/custom_components/` directory.
-  2. Restart Home Assistant.
+## Installation
 
-### 3. Configure in Home Assistant UI
+### Via HACS (Custom Repository)
 
-- Step on the scale to wake it up (Home Assistant may auto-discover it under **Settings → Devices & Services**), or click **Add Integration → Xiaomi Scale S400 Live**.
-- Enter the scale's **Bluetooth MAC address** (`AA:BB:CC:DD:EE:FF`) and the **24-hex-character BLE Login Token**.
-- If the scale is ever re-paired in Mi Home and its token rotates, you can update the token via **Configure** on the integration card (or the automatic Re-authenticate prompt).
+1. In Home Assistant, open **HACS** → **Integrations**.
+2. Click the three dots (⋮) in the top-right corner and select **Custom repositories**.
+3. Add the repository URL: `https://github.com/jaydeethree/Home-Assistant-xiaomi-s400-scale` with category **Integration**.
+4. Search for **Xiaomi S400 Scale** and click **Download**.
+5. Restart Home Assistant.
 
-### Entities Created
+### Manual Installation
 
-| Entity | Type | Description |
+1. Download or clone this repository.
+2. Copy the `custom_components/xiaomi-s400-scale` folder into your Home Assistant `<config>/custom_components/` directory.
+3. Restart Home Assistant.
+
+---
+
+## Configuration
+
+1. Step on the scale to wake it up and begin BLE advertising.
+2. In Home Assistant, go to **Settings** → **Devices & Services**.
+   - If auto-discovered via Bluetooth, click **Configure**.
+   - Otherwise, click **Add Integration**, search for **Xiaomi S400 Scale**, and enter your scale's Bluetooth MAC address.
+3. Enter the 24-character hex **BLE Login Token**.
+4. Submit the form to complete the setup.
+
+### Token Updates / Re-authentication
+
+If the scale is factory reset or re-paired in the Mi Home app, the BLE token rotates. You can update the token anytime by clicking **Configure** on the integration card or by following the automatic re-authentication prompt if Home Assistant detects an authentication failure.
+
+---
+
+## Entities Provided
+
+| Entity | Domain | Description |
 | --- | --- | --- |
-| `sensor.*_live_weight` | Sensor (`kg`) | Real-time weight stream (~0.3s updates while standing on the scale) |
-| `sensor.*_weight` | Sensor (`kg`) | Final locked weight reading (restored across HA restarts; includes `profile_id` and `device_timestamp` attributes) |
-| `sensor.*_impedance` | Sensor (`Ω`) | Final high-frequency bio-electrical impedance |
-| `sensor.*_low_frequency_impedance` | Sensor (`Ω`) | Final low-frequency bio-electrical impedance |
-| `binary_sensor.*_weight_stable` | Binary Sensor | `on` when the live weight measurement locks/stabilizes during a weigh-in |
-| `binary_sensor.*_connected` | Binary Sensor | Diagnostic connectivity state (`on` while an authenticated GATT session is active) |
+| `sensor.<device>_live_weight` | Sensor (`kg`) | Real-time weight stream updating every ~0.3s while on the scale |
+| `sensor.<device>_weight` | Sensor (`kg`) | Final locked weight measurement (restored across HA restarts) |
+| `sensor.<device>_impedance` | Sensor (`Ω`) | Bio-electrical impedance measurement |
+| `sensor.<device>_low_frequency_impedance` | Sensor (`Ω`) | Low-frequency bio-electrical impedance measurement |
+| `binary_sensor.<device>_weight_stable` | Binary Sensor | Indicates when the live weight measurement has stabilized |
+| `binary_sensor.<device>_connected` | Binary Sensor | Diagnostic sensor indicating an active authenticated BLE connection |
 
-Additionally, a `xiaomi_s400_live_measurement` event is fired on the Home Assistant event bus whenever a final measurement completes.
-
-## Python Library Install
-
-```bash
-pip install xiaomi-s400-live              # core (bring your own bindkey + token)
-pip install "xiaomi-s400-live[cloud]"     # + auto-fetch via micloud
-```
-
-## Running the examples
-
-```bash
-git clone https://github.com/YOURUSER/xiaomi-s400-live
-cd xiaomi-s400-live
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env               # fill in SCALE_MAC + profile
-```
-
-Then pick one of two paths to get your scale's `bindkey` + 12-byte login `token`:
-
-### Path A — static credentials (recommended)
-
-Most accounts have 2FA enabled, which the `micloud` library cannot handle. Use
-[Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor)
-once (it does support 2FA + captcha interactively), save the output as
-`credentials.json` (see `credentials.example.json`), then:
-
-```bash
-python examples/static_credentials.py
-```
-
-### Path B — automatic Mi Cloud login (no 2FA only)
-
-If your Mi account has no 2FA, the library can fetch credentials each session:
-
-```bash
-# Add MI_EMAIL + MI_PASSWORD to .env first
-python examples/single_scale.py
-```
-
-`MiCloudClient` caches to `~/.s400_cache.json` so it only hits the cloud once
-per token rotation.
-
-## Library usage
-
-```python
-import asyncio
-from xiaomi_s400_live import S400Scale, MiCloudClient, UserProfile
-
-async def main():
-    cloud = MiCloudClient(
-        email="you@example.com",
-        password="...",
-        cache_path="~/.s400_cache.json",
-    )
-    profile = UserProfile(sex="male", age_years=30, height_cm=175)
-
-    async with S400Scale("AA:BB:CC:DD:EE:FF", cloud=cloud, profile=profile) as scale:
-        async for event in scale.events():
-            if event.type == "live":
-                print(f"Live: {event.weight_kg} kg  stable={event.stable}")
-            elif event.type == "final":
-                print(f"Final: {event.weight_kg} kg")
-                print(f"  Impedance: {event.impedance_ohm} Ω")
-                print(f"  Body: {event.body_composition}")
-
-asyncio.run(main())
-```
-
-On **macOS**, BLE addresses are opaque per-host UUIDs but the library scans by name-suffix (the last 4 hex digits of the MAC, e.g. `BD4F`), so just pass the real MAC.
-
-## How it works
-
-1. Connect via Bleak.
-2. Subscribe to UPNP (`0x10`), AVDTP (`0x19`) and the encrypted channels CMTP (`0x1b`) / VEND1A (`0x1a`).
-3. Run Mi Home v2 **LOGIN**:
-   - exchange random keys with the device over AVDTP
-   - derive `dev_key / app_key / dev_iv / app_iv` via HKDF-SHA256(`token`, salt = app_rand || dev_rand, info = `mible-login-info`)
-   - verify with HMAC-SHA256 and confirm with `0x21 00 00 00` on UPNP
-4. Pump multi-frame messages on CMTP, AES-CCM-decrypt with `dev_key + dev_iv + iter`, parse ASCII CSV payloads into `live` / `final` events.
-
-Plain English: the scale will only emit measurements once you prove you're paired with the Mi Home account that owns it. The 12-byte BLE login token comes from Mi Cloud — `MiCloudClient` fetches it for you.
-
-## Multi-scale
-
-```python
-from xiaomi_s400_live import S400Scale, MiCloudClient, UserProfile
-import asyncio
-
-async def watch(cloud, mac, profile):
-    async with S400Scale(mac, cloud=cloud, profile=profile) as s:
-        async for ev in s.events():
-            if ev.type == "final":
-                print(f"[{mac}] {ev.weight_kg} kg")
-
-async def main():
-    cloud = MiCloudClient(email=..., password=...)
-    await asyncio.gather(
-        watch(cloud, "CC:4D:75:AA:AA:AA", UserProfile("female", 28, 162)),
-        watch(cloud, "CC:4D:75:BB:BB:BB", UserProfile("male",   34, 178)),
-    )
-
-asyncio.run(main())
-```
-
-The host's BLE adapter is the bottleneck — most stacks handle 5–7 concurrent GATT connections comfortably.
-
-## Token rotation
-
-The 12-byte BLE login token rotates whenever the scale is factory-reset or removed-and-re-added in Mi Home. The library handles this:
-
-1. `S400Scale.__aenter__()` reads from cache, attempts login.
-2. If `BadTokenError` (HMAC mismatch), the cache entry is invalidated and `MiCloudClient` refetches from Xiaomi Cloud.
-3. Login is retried once with the new token.
-
-If you don't want Mi Cloud access, pass `bindkey=` and `token=` directly and handle rotation yourself (re-extract via [PiotrMachowski/Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor)).
+---
 
 ## Credits
 
-The protocol and decoders were built on:
+- [nokistin/xiaomi-s400-live](https://github.com/nokistin/xiaomi-s400-live) — original library and reverse engineering of the S400 real-time GATT stream
+- [dnandha/miauth](https://github.com/dnandha/miauth) — Mi Home v2 auth protocol reverse engineering
+- [PiotrMachowski/Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor) — token extraction tool
+- [dckiller51/bodymiscale](https://github.com/dckiller51/bodymiscale) — body composition calculations for Home Assistant
+- [Bluetooth-Devices/xiaomi-ble](https://github.com/Bluetooth-Devices/xiaomi-ble) — Home Assistant Bluetooth integration foundation
 
-- [dnandha/miauth](https://github.com/dnandha/miauth) — Apache 2.0 — Mi Home v2 auth protocol reverse-engineering (Python + Java)
-- [mnm-matin/miscale](https://github.com/mnm-matin/miscale) — MIT — S400 advertisement decoder + body composition formulas
-- [PiotrMachowski/Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor) — getting bindkey + token from Mi Cloud
-- [Bluetooth-Devices/xiaomi-ble](https://github.com/Bluetooth-Devices/xiaomi-ble) — passive MiBeacon parsing (used internally by Home Assistant)
-
-The protocol is reverse-engineered; it can break on firmware updates. Tested against firmware `2.1.1_0006`.
-
-The Mi Home v2 protocol port, encrypted-channel decoder, and high-level Scale
-client were developed pair-programming with [Claude](https://claude.com/claude-code)
-(Opus 4.7). Pairing across PacketLogger capture analysis, AES-CCM session-key
-verification, and async Bleak integration took roughly one evening from
-"can't decrypt anything" to working realtime.
+---
 
 ## License
 
