@@ -1,4 +1,4 @@
-# Xiaomi S400 Scale (Live) for Home Assistant
+# Xiaomi S400 Scale for Home Assistant
 
 > [!WARNING]
 > **Early Work in Progress**: This integration is currently in early experimental development and is **not ready for general use yet**. Expect breaking changes, bugs, or connection quirks.
