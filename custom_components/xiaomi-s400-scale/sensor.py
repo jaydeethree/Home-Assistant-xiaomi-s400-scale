@@ -13,7 +13,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_ADDRESS, UnitOfElectricResistance, UnitOfMass
+from homeassistant.const import CONF_ADDRESS, UnitOfMass
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -21,6 +21,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 from .coordinator import S400Coordinator, S400State
+
+UNIT_OHM = "ohm"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -87,7 +89,7 @@ SENSORS: tuple[S400SensorEntityDescription, ...] = (
         key="impedance",
         translation_key="impedance",
         name="Impedance",
-        native_unit_of_measurement=UnitOfElectricResistance.OHM,
+        native_unit_of_measurement=UNIT_OHM,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
         icon="mdi:omega",
@@ -98,7 +100,7 @@ SENSORS: tuple[S400SensorEntityDescription, ...] = (
         key="impedance_low",
         translation_key="impedance_low",
         name="Low-Frequency Impedance",
-        native_unit_of_measurement=UnitOfElectricResistance.OHM,
+        native_unit_of_measurement=UNIT_OHM,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
         icon="mdi:omega",
