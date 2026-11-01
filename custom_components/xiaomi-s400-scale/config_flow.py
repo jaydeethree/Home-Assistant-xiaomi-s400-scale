@@ -52,7 +52,7 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
         """Get the options flow for this handler."""
-        return XiaomiS400ScaleOptionsFlow(config_entry)
+        return XiaomiS400ScaleOptionsFlow()
 
     async def async_step_bluetooth(
         self, discovery_info: BluetoothServiceInfoBleak
@@ -210,10 +210,6 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
 class XiaomiS400ScaleOptionsFlow(OptionsFlow):
     """Handle options flow to update the BLE login token."""
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialize options flow."""
-        self._config_entry = config_entry
-
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -230,8 +226,8 @@ class XiaomiS400ScaleOptionsFlow(OptionsFlow):
                     data={CONF_TOKEN: token},
                 )
 
-        current_token = self._config_entry.options.get(
-            CONF_TOKEN, self._config_entry.data.get(CONF_TOKEN, "")
+        current_token = self.config_entry.options.get(
+            CONF_TOKEN, self.config_entry.data.get(CONF_TOKEN, "")
         )
         return self.async_show_form(
             step_id="init",
