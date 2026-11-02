@@ -193,7 +193,7 @@ class S400Coordinator:
                 self._auth_failed = True
                 self.entry.async_start_reauth(self.hass)
             except AuthError as exc:
-                logger.debug("BLE handshake incomplete on %s: %s", self.address, exc)
+                logger.warning("BLE handshake failed on %s: %s", self.address, exc)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -205,9 +205,14 @@ class S400Coordinator:
                         await client.disconnect()
                     except Exception as exc:
                         logger.debug("Disconnect cleanup error on %s: %s", self.address, exc)
-                if self.state.connected or self.state.stable:
+                if (
+                    self.state.connected
+                    or self.state.stable
+                    or self.state.live_weight_kg is not None
+                ):
                     self.state.connected = False
                     self.state.stable = False
+                    self.state.live_weight_kg = None
                     self._async_notify_listeners()
 
     async def _cmtp_pump(
@@ -220,6 +225,7 @@ class S400Coordinator:
         """Drain CMTP notifications, reassemble multi-frame messages, decrypt, and update state."""
         q = hub.queue(CMTP)
         expected = 0
+        next_frame = 1
         buf = b""
         while not self._stopping and not disconnected_ev.is_set():
             try:
@@ -227,27 +233,41 @@ class S400Coordinator:
             except asyncio.TimeoutError:
                 continue
 
-            # Header: 00 00 00 SS LL 00
-            if len(data) >= 6 and data[:3] == b"\x00\x00\x00" and data[5] == 0:
-                expected = data[4]
+            # Header: 00 00 00 SS LL_LO LL_HI
+            if len(data) >= 6 and data[:3] == b"\x00\x00\x00":
+                expected = data[4] | (data[5] << 8)
+                next_frame = 1
                 buf = b""
                 await client.write_gatt_char(CMTP, RCV_RDY, response=False)
                 continue
 
-            # Data frame: NN 00 <payload>
-            if len(data) >= 2 and data[1] == 0 and expected > 0:
-                frame_num = data[0]
+            # Data frame: NN_LO NN_HI <payload>
+            if len(data) >= 2 and expected > 0:
+                frame_num = data[0] | (data[1] << 8)
+                if frame_num != next_frame:
+                    logger.debug(
+                        "CMTP frame out of sequence on %s: expected %d, got %d; resetting buffer",
+                        self.address,
+                        next_frame,
+                        frame_num,
+                    )
+                    expected = 0
+                    next_frame = 1
+                    buf = b""
+                    continue
                 buf += data[2:]
+                next_frame += 1
                 if frame_num >= expected:
                     await self._handle_full_frame(keys, buf)
                     await client.write_gatt_char(CMTP, RCV_OK, response=False)
                     expected = 0
+                    next_frame = 1
                     buf = b""
 
     async def _handle_full_frame(self, keys: SessionKeys, ciphertext: bytes) -> None:
         pt = decrypt_cmtp(keys, ciphertext)
         if pt is None:
-            logger.warning("CMTP decrypt failed on %s", ciphertext.hex())
+            logger.debug("CMTP decrypt failed on %s: %s", self.address, ciphertext.hex())
             return
         parsed = parse_cmtp_payload(pt)
         if parsed is None:
@@ -267,10 +287,16 @@ class S400Coordinator:
                 self.state.live_weight_kg = event.weight_kg
                 self.state.final_weight_kg = event.weight_kg
             self.state.stable = event.stable
-            if event.impedance_ohm and event.impedance_ohm > 0:
-                self.state.impedance_ohm = event.impedance_ohm
-            if event.impedance_low_ohm and event.impedance_low_ohm > 0:
-                self.state.impedance_low_ohm = event.impedance_low_ohm
+            self.state.impedance_ohm = (
+                event.impedance_ohm
+                if (event.impedance_ohm and event.impedance_ohm > 0)
+                else None
+            )
+            self.state.impedance_low_ohm = (
+                event.impedance_low_ohm
+                if (event.impedance_low_ohm and event.impedance_low_ohm > 0)
+                else None
+            )
             if event.profile_id is not None:
                 self.state.profile_id = event.profile_id
             if event.timestamp is not None:
@@ -283,8 +309,8 @@ class S400Coordinator:
                 {
                     "address": self.address,
                     "weight_kg": self.state.final_weight_kg,
-                    "impedance_ohm": event.impedance_ohm,
-                    "impedance_low_ohm": event.impedance_low_ohm,
+                    "impedance_ohm": self.state.impedance_ohm,
+                    "impedance_low_ohm": self.state.impedance_low_ohm,
                     "profile_id": event.profile_id,
                     "timestamp": event.timestamp,
                 },
