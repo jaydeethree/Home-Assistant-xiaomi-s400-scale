@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 import logging
 import secrets
-from typing import Callable
 
 from bleak import BleakClient
 
 from .crypto import SessionKeys, derive_login_keys, hmac_sha256
 from .protocol import (
+    AUTH_ERRORS,
     AVDTP,
+    CFM_LOGIN_ERR,
     CFM_LOGIN_OK,
     CMD_LOGIN,
     CMD_SEND_INFO,
@@ -143,12 +145,14 @@ async def login(
         raise AuthError(f"expected RCV_OK for SEND_INFO, got {ok.hex()}")
 
     result = await _wait(upnp_q, timeout)
+    if result == CFM_LOGIN_ERR:
+        raise BadTokenError(f"device rejected login (CFM_LOGIN_ERR: {result.hex()})")
+    if result in AUTH_ERRORS:
+        raise AuthError(f"device returned auth error code: {result.hex()}")
     if result != CFM_LOGIN_OK:
-        raise AuthError(f"login failed: {result.hex()}")
+        raise AuthError(f"unexpected login response: {result.hex()}")
 
     return keys
 
 
-def make_notify_hub() -> NotifyHub:
-    """Create a NotifyHub instance."""
-    return NotifyHub()
+make_notify_hub = NotifyHub
