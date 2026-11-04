@@ -8,7 +8,7 @@ from typing import Any
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 
-from . import S400ConfigEntry
+from .coordinator import S400ConfigEntry
 from .const import CONF_TOKEN
 
 TO_REDACT = {CONF_TOKEN}

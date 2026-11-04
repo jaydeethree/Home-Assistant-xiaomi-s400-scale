@@ -14,8 +14,7 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import S400ConfigEntry
-from .coordinator import S400State
+from .coordinator import S400ConfigEntry, S400State
 from .entity import S400Entity
 
 

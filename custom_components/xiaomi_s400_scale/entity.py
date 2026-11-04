@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr
@@ -10,7 +9,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity, EntityDescription
 
 from .const import DOMAIN, MANUFACTURER, MODEL_NAME
-from .coordinator import S400Coordinator
+from .coordinator import S400ConfigEntry, S400Coordinator
 
 
 class S400Entity(Entity):
@@ -22,7 +21,7 @@ class S400Entity(Entity):
     def __init__(
         self,
         coordinator: S400Coordinator,
-        entry: ConfigEntry,
+        entry: S400ConfigEntry,
         description: EntityDescription,
     ) -> None:
         """Initialize the entity."""

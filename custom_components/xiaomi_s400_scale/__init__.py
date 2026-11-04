@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, Platform
 from homeassistant.core import HomeAssistant
 
 from .const import CONF_TOKEN
-from .coordinator import S400Coordinator
-
-type S400ConfigEntry = ConfigEntry[S400Coordinator]
+from .coordinator import S400ConfigEntry, S400Coordinator
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
 

@@ -37,6 +37,8 @@ from .protocol import (
 
 logger = logging.getLogger(__name__)
 
+type S400ConfigEntry = ConfigEntry[S400Coordinator]
+
 
 @dataclass
 class S400State:
@@ -57,7 +59,7 @@ class S400Coordinator:
     def __init__(
         self,
         hass: HomeAssistant,
-        entry: ConfigEntry,
+        entry: S400ConfigEntry,
         address: str,
         token: bytes,
     ) -> None:
