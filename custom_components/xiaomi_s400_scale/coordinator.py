@@ -250,6 +250,7 @@ class S400Coordinator:
                         next_frame,
                         frame_num,
                     )
+                    await client.write_gatt_char(CMTP, RCV_OK, response=False)
                     expected = 0
                     next_frame = 1
                     buf = b""
