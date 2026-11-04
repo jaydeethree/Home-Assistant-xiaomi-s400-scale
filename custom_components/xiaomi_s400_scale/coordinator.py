@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 import logging
 import time
 
@@ -16,6 +17,7 @@ from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth.match import BluetoothCallbackMatcher
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.util import dt as dt_util
 
 from .auth import AuthError, BadTokenError, NotifyHub, login
 from .const import (
@@ -48,7 +50,7 @@ class S400State:
     stable: bool = False
     impedance_ohm: float | None = None
     impedance_low_ohm: float | None = None
-    device_timestamp: int | None = None
+    last_measurement: datetime | None = None
 
 
 class S400Coordinator:
@@ -294,7 +296,6 @@ class S400Coordinator:
                 if (event.impedance_low_ohm and event.impedance_low_ohm > 0)
                 else None
             )
-            if event.timestamp is not None:
-                self.state.device_timestamp = event.timestamp
+            self.state.last_measurement = dt_util.utcnow()
 
             self._async_notify_listeners()

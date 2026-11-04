@@ -49,7 +49,6 @@ class ScaleEvent:
     stable: bool = False
     impedance_ohm: float | None = None
     impedance_low_ohm: float | None = None
-    timestamp: int | None = None
 
 
 def parse_cmtp_payload(pt: bytes) -> ScaleEvent | None:
@@ -84,7 +83,6 @@ def parse_cmtp_payload(pt: bytes) -> ScaleEvent | None:
             type="final",
             weight_kg=w / 10 if w is not None else None,
             stable=parts[4] == "1",
-            timestamp=_i(parts[6]),
             impedance_ohm=imp / 10 if imp is not None else None,
             impedance_low_ohm=imp_low / 10 if imp_low is not None else None,
         )
