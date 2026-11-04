@@ -55,6 +55,9 @@
       },
       "impedance_low": {
         "name": "Low-Frequency Impedance"
+      },
+      "last_measurement": {
+        "name": "Last Measurement"
       }
     },
     "binary_sensor": {
