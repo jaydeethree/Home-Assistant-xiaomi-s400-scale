@@ -9,19 +9,8 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity, EntityDescription
 
-from .const import DOMAIN
+from .const import DOMAIN, MANUFACTURER, MODEL_NAME
 from .coordinator import S400Coordinator
-
-MANUFACTURER = "Xiaomi"
-MODEL_NAME = "Body Composition Scale S400 (MJTZC01YM)"
-
-
-def get_coordinator(entry: ConfigEntry) -> S400Coordinator:
-    """Retrieve the S400Coordinator from runtime_data or hass.data."""
-    coordinator = getattr(entry, "runtime_data", None)
-    if coordinator is not None:
-        return coordinator
-    return entry.hass_data[DOMAIN][entry.entry_id] if hasattr(entry, "hass_data") else None  # type: ignore[return-value]
 
 
 class S400Entity(Entity):
