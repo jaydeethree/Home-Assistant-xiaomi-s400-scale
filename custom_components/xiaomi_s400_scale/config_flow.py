@@ -131,9 +131,8 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             if addr in current_ids:
                 continue
             if (
-                MIBEACON_SERVICE_UUID in info.service_uuids
+                MIBEACON_SERVICE_UUID in info.service_data
                 or "s400" in (info.name or "").lower()
-                or "scale" in (info.name or "").lower()
             ):
                 label = f"{info.name} ({addr})" if info.name else addr
                 options.append(SelectOptionDict(value=addr, label=label))
