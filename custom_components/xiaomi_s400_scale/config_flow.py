@@ -12,7 +12,7 @@ from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
     async_discovered_service_info,
 )
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.helpers.device_registry import format_mac
 from homeassistant.helpers.selector import (
@@ -22,7 +22,7 @@ from homeassistant.helpers.selector import (
     SelectSelectorMode,
 )
 
-from .const import CONF_TOKEN, DOMAIN
+from .const import CONF_TOKEN, DOMAIN, S400_PRODUCT_IDS
 from .protocol import MIBEACON_SERVICE_UUID
 
 MAC_REGEX = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
@@ -35,6 +35,27 @@ def _clean_token(raw: str) -> str:
 
 def _clean_mac(raw: str) -> str:
     return format_mac(raw.strip()).upper()
+
+
+def _validate_token(raw: str, errors: dict[str, str]) -> str | None:
+    """Clean and validate a 24-hex-character BLE token."""
+    token = _clean_token(raw)
+    if not HEX_24_REGEX.match(token):
+        errors[CONF_TOKEN] = "invalid_token"
+        return None
+    return token
+
+
+def _is_s400_service_info(info: BluetoothServiceInfoBleak) -> bool:
+    """Return True if the discovered BLE device matches a Xiaomi S400 Scale."""
+    if "s400" in (info.name or "").lower():
+        return True
+    mibeacon = info.service_data.get(MIBEACON_SERVICE_UUID)
+    if mibeacon is not None and len(mibeacon) >= 4:
+        product_id = int.from_bytes(mibeacon[2:4], "little")
+        if product_id in S400_PRODUCT_IDS:
+            return True
+    return False
 
 
 class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -72,10 +93,7 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
         if user_input is not None:
-            token = _clean_token(user_input[CONF_TOKEN])
-            if not HEX_24_REGEX.match(token):
-                errors[CONF_TOKEN] = "invalid_token"
-            else:
+            if token := _validate_token(user_input[CONF_TOKEN], errors):
                 return self.async_create_entry(
                     title=default_name,
                     data={
@@ -106,14 +124,11 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             address = _clean_mac(user_input[CONF_ADDRESS])
-            token = _clean_token(user_input[CONF_TOKEN])
-
             if not MAC_REGEX.match(address):
                 errors[CONF_ADDRESS] = "invalid_mac"
-            if not HEX_24_REGEX.match(token):
-                errors[CONF_TOKEN] = "invalid_token"
+            token = _validate_token(user_input[CONF_TOKEN], errors)
 
-            if not errors:
+            if not errors and token is not None:
                 await self.async_set_unique_id(address, raise_on_progress=False)
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
@@ -130,10 +145,7 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             addr = info.address.upper()
             if addr in current_ids:
                 continue
-            if (
-                MIBEACON_SERVICE_UUID in info.service_data
-                or "s400" in (info.name or "").lower()
-            ):
+            if _is_s400_service_info(info):
                 label = f"{info.name} ({addr})" if info.name else addr
                 options.append(SelectOptionDict(value=addr, label=label))
 
@@ -160,6 +172,37 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    async def _async_step_token_update(
+        self,
+        step_id: str,
+        entry: ConfigEntry,
+        user_input: dict[str, Any] | None,
+        default_token: str = "",
+    ) -> ConfigFlowResult:
+        """Shared handler for updating the BLE login token (reauth and reconfigure)."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            if token := _validate_token(user_input[CONF_TOKEN], errors):
+                return self.async_update_reload_and_abort(
+                    entry,
+                    data_updates={CONF_TOKEN: token},
+                )
+
+        token_field = (
+            vol.Required(CONF_TOKEN, default=default_token)
+            if default_token
+            else vol.Required(CONF_TOKEN)
+        )
+        return self.async_show_form(
+            step_id=step_id,
+            data_schema=vol.Schema({token_field: str}),
+            description_placeholders={
+                "address": entry.data[CONF_ADDRESS],
+            },
+            errors=errors,
+        )
+
     async def async_step_reauth(
         self, entry_data: Mapping[str, Any]
     ) -> ConfigFlowResult:
@@ -170,61 +213,18 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Confirm new BLE login token."""
-        reauth_entry = self._get_reauth_entry()
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            token = _clean_token(user_input[CONF_TOKEN])
-            if not HEX_24_REGEX.match(token):
-                errors[CONF_TOKEN] = "invalid_token"
-            else:
-                return self.async_update_reload_and_abort(
-                    reauth_entry,
-                    data_updates={CONF_TOKEN: token},
-                )
-
-        return self.async_show_form(
-            step_id="reauth_confirm",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_TOKEN): str,
-                }
-            ),
-            description_placeholders={
-                "address": reauth_entry.data[CONF_ADDRESS],
-            },
-            errors=errors,
+        return await self._async_step_token_update(
+            "reauth_confirm", self._get_reauth_entry(), user_input
         )
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle reconfiguration to update the BLE login token."""
-        reconfigure_entry = self._get_reconfigure_entry()
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            token = _clean_token(user_input[CONF_TOKEN])
-            if not HEX_24_REGEX.match(token):
-                errors[CONF_TOKEN] = "invalid_token"
-            else:
-                return self.async_update_reload_and_abort(
-                    reconfigure_entry,
-                    data_updates={CONF_TOKEN: token},
-                )
-
-        return self.async_show_form(
-            step_id="reconfigure",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_TOKEN,
-                        default=reconfigure_entry.data.get(CONF_TOKEN, ""),
-                    ): str,
-                }
-            ),
-            description_placeholders={
-                "address": reconfigure_entry.data[CONF_ADDRESS],
-            },
-            errors=errors,
+        entry = self._get_reconfigure_entry()
+        return await self._async_step_token_update(
+            "reconfigure",
+            entry,
+            user_input,
+            default_token=entry.data.get(CONF_TOKEN, ""),
         )
