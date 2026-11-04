@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -47,18 +47,9 @@ def _restore_impedance_low(state: S400State, value: Any) -> None:
         state.impedance_low_ohm = float(value)
 
 
-def _restore_timestamp(state: S400State, value: Any) -> None:
-    if state.device_timestamp is None:
-        if isinstance(value, datetime):
-            state.device_timestamp = int(value.timestamp())
-        elif isinstance(value, (int, float)):
-            state.device_timestamp = int(value)
-
-
-def _timestamp_value(state: S400State) -> datetime | None:
-    if state.device_timestamp is None or state.device_timestamp <= 0:
-        return None
-    return datetime.fromtimestamp(state.device_timestamp, tz=UTC)
+def _restore_last_measurement(state: S400State, value: Any) -> None:
+    if state.last_measurement is None and isinstance(value, datetime):
+        state.last_measurement = value
 
 
 SENSORS: tuple[S400SensorEntityDescription, ...] = (
@@ -103,8 +94,8 @@ SENSORS: tuple[S400SensorEntityDescription, ...] = (
         translation_key="last_measurement",
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=_timestamp_value,
-        restore_fn=_restore_timestamp,
+        value_fn=lambda s: s.last_measurement,
+        restore_fn=_restore_last_measurement,
     ),
 )
 
