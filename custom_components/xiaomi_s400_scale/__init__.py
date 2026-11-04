@@ -9,37 +9,31 @@ from homeassistant.core import HomeAssistant
 from .const import CONF_TOKEN, DOMAIN
 from .coordinator import S400Coordinator
 
+type S400ConfigEntry = ConfigEntry[S400Coordinator]
+
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: S400ConfigEntry) -> bool:
     """Set up Xiaomi S400 Scale from a config entry."""
     address: str = entry.data[CONF_ADDRESS]
-    token_hex: str = entry.options.get(CONF_TOKEN, entry.data[CONF_TOKEN])
-    token = bytes.fromhex(token_hex)
+    token = bytes.fromhex(entry.data[CONF_TOKEN])
 
     coordinator = S400Coordinator(hass, entry, address, token)
+    entry.runtime_data = coordinator
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     coordinator.async_start()
-    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+    entry.async_on_unload(coordinator.async_stop)
 
     return True
 
 
-async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Handle options update."""
-    await hass.config_entries.async_reload(entry.entry_id)
-
-
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: S400ConfigEntry) -> bool:
     """Unload a config entry."""
-    coordinator: S400Coordinator = hass.data[DOMAIN][entry.entry_id]
-    await coordinator.async_stop()
-
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        hass.data[DOMAIN].pop(entry.entry_id)
+        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
 
     return unload_ok
