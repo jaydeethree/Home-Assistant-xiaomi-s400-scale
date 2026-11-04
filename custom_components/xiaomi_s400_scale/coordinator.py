@@ -30,16 +30,21 @@ from .protocol import (
     AVDTP,
     CMTP,
     RCV_OK,
-    RCV_RDY,
     UPNP,
     VEND1A,
     VEND1C,
+    CmtpReassembler,
+    FrameSequenceError,
     parse_cmtp_payload,
 )
 
 logger = logging.getLogger(__name__)
 
 type S400ConfigEntry = ConfigEntry[S400Coordinator]
+
+MAX_CONSECUTIVE_BAD_TOKENS = 3
+REQUIRED_NOTIFY_UUIDS = (UPNP, AVDTP, CMTP)
+OPTIONAL_NOTIFY_UUIDS = (AVCTP, VEND1A, VEND1C)
 
 
 @dataclass
@@ -72,12 +77,40 @@ class S400Coordinator:
         self.state = S400State()
 
         self._listeners: list[Callable[[], None]] = []
-        self._connect_lock = asyncio.Lock()
         self._active_task: asyncio.Task[None] | None = None
         self._unsub_bluetooth: CALLBACK_TYPE | None = None
         self._stopping = False
         self._auth_failed = False
+        self._consecutive_bad_tokens = 0
+        self._consecutive_failures = 0
+        self._last_error: str | None = None
+        self._last_connect_time: datetime | None = None
         self._last_disconnect_mono: float = 0.0
+
+    @property
+    def auth_failed(self) -> bool:
+        """Return True if authentication was permanently halted pending reauth."""
+        return self._auth_failed
+
+    @property
+    def connecting(self) -> bool:
+        """Return True if a BLE session task is currently active."""
+        return self._active_task is not None and not self._active_task.done()
+
+    @property
+    def consecutive_failures(self) -> int:
+        """Return the number of consecutive connection/auth failures."""
+        return self._consecutive_failures
+
+    @property
+    def last_error(self) -> str | None:
+        """Return the last connection/auth error message, if any."""
+        return self._last_error
+
+    @property
+    def last_connect_time(self) -> datetime | None:
+        """Return the UTC timestamp of the last successful authentication."""
+        return self._last_connect_time
 
     @callback
     def async_add_listener(self, update_callback: Callable[[], None]) -> Callable[[], None]:
@@ -106,12 +139,6 @@ class S400Coordinator:
             BluetoothCallbackMatcher(address=self.address, connectable=True),
             bluetooth.BluetoothScanningMode.ACTIVE,
         )
-        # If the scale is already awake and advertising right now, connect immediately
-        ble_device = bluetooth.async_ble_device_from_address(
-            self.hass, self.address, connectable=True
-        )
-        if ble_device is not None:
-            self._schedule_connect(ble_device)
 
     async def async_stop(self) -> None:
         """Stop BLE listener and disconnect if connected."""
@@ -134,9 +161,7 @@ class S400Coordinator:
         change: bluetooth.BluetoothChange,
     ) -> None:
         """Handle an advertisement from the scale."""
-        if self._stopping or self._auth_failed:
-            return
-        if self._connect_lock.locked():
+        if self._stopping or self._auth_failed or self.connecting:
             return
         if (time.monotonic() - self._last_disconnect_mono) < RECONNECT_COOLDOWN_SECONDS:
             return
@@ -144,7 +169,7 @@ class S400Coordinator:
 
     @callback
     def _schedule_connect(self, ble_device: BLEDevice) -> None:
-        if self._active_task is not None and not self._active_task.done():
+        if self.connecting:
             return
         self._active_task = self.entry.async_create_background_task(
             self.hass,
@@ -152,121 +177,125 @@ class S400Coordinator:
             name=f"xiaomi_s400_scale_{self.address}",
         )
 
+    def _record_failure(self, message: str) -> None:
+        """Record a connection or handshake failure and log with rate limiting."""
+        self._consecutive_failures += 1
+        self._last_error = message
+        log_fn = logger.warning if self._consecutive_failures == 1 else logger.debug
+        log_fn(
+            "BLE session failed on %s (attempt %d): %s",
+            self.address,
+            self._consecutive_failures,
+            message,
+        )
+
     async def _async_connect_and_stream(self, ble_device: BLEDevice) -> None:
-        if self._connect_lock.locked():
-            return
-        async with self._connect_lock:
-            disconnected_ev = asyncio.Event()
+        hub = NotifyHub()
 
-            def _on_disconnect(_client: BleakClient) -> None:
-                disconnected_ev.set()
+        def _on_disconnect(_client: BleakClient) -> None:
+            hub.queue(CMTP).put_nowait(None)  # type: ignore[arg-type]
 
-            client: BleakClientWithServiceCache | None = None
-            try:
-                logger.debug("Connecting to Xiaomi S400 Scale (%s)...", self.address)
-                client = await establish_connection(
-                    BleakClientWithServiceCache,
-                    ble_device,
-                    self.address,
-                    disconnected_callback=_on_disconnect,
-                    max_attempts=2,
-                )
-                hub = NotifyHub()
-                for uuid in (UPNP, AVDTP, AVCTP, VEND1A, CMTP, VEND1C):
-                    try:
-                        await client.start_notify(uuid, hub.make_callback(uuid))
-                    except Exception as exc:
-                        logger.debug("Subscribe %s skipped: %s", uuid[:8], exc)
+        client: BleakClientWithServiceCache | None = None
+        try:
+            logger.debug("Connecting to Xiaomi S400 Scale (%s)...", self.address)
+            client = await establish_connection(
+                BleakClientWithServiceCache,
+                ble_device,
+                self.address,
+                disconnected_callback=_on_disconnect,
+                max_attempts=2,
+                ble_device_callback=lambda: bluetooth.async_ble_device_from_address(
+                    self.hass, self.address, connectable=True
+                ),
+            )
+            for uuid in REQUIRED_NOTIFY_UUIDS:
+                await client.start_notify(uuid, hub.make_callback(uuid))
+            for uuid in OPTIONAL_NOTIFY_UUIDS:
+                try:
+                    await client.start_notify(uuid, hub.make_callback(uuid))
+                except Exception as exc:
+                    logger.debug("Optional subscribe %s skipped: %s", uuid[:8], exc)
 
-                await asyncio.sleep(SETTLE_DELAY_SECONDS)
-                keys = await login(client, self.token, hub)
-                logger.info("Authenticated with Xiaomi S400 Scale (%s)", self.address)
+            await asyncio.sleep(SETTLE_DELAY_SECONDS)
+            keys = await login(client, self.token, hub)
+            logger.info("Authenticated with Xiaomi S400 Scale (%s)", self.address)
 
-                self.state.connected = True
-                self._async_notify_listeners()
+            self._consecutive_bad_tokens = 0
+            self._consecutive_failures = 0
+            self._last_error = None
+            self._last_connect_time = dt_util.utcnow()
+            self.state.connected = True
+            self._async_notify_listeners()
 
-                await self._cmtp_pump(client, keys, hub, disconnected_ev)
+            await self._cmtp_pump(client, keys, hub)
 
-            except BadTokenError as exc:
+        except BadTokenError as exc:
+            self._consecutive_bad_tokens += 1
+            self._consecutive_failures += 1
+            self._last_error = str(exc)
+            if self._consecutive_bad_tokens >= MAX_CONSECUTIVE_BAD_TOKENS:
                 logger.error(
-                    "BLE login token rejected by scale %s (%s). Triggering reauth.",
+                    "BLE login token rejected %d times in a row by scale %s (%s). Triggering reauth.",
+                    self._consecutive_bad_tokens,
                     self.address,
                     exc,
                 )
                 self._auth_failed = True
                 self.entry.async_start_reauth(self.hass)
-            except AuthError as exc:
-                logger.warning("BLE handshake failed on %s: %s", self.address, exc)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.debug("BLE connection ended for %s: %s", self.address, exc)
-            finally:
-                self._last_disconnect_mono = time.monotonic()
-                if client is not None and client.is_connected:
-                    try:
-                        await client.disconnect()
-                    except Exception as exc:
-                        logger.debug("Disconnect cleanup error on %s: %s", self.address, exc)
-                if (
-                    self.state.connected
-                    or self.state.stable
-                    or self.state.live_weight_kg is not None
-                ):
-                    self.state.connected = False
-                    self.state.stable = False
-                    self.state.live_weight_kg = None
-                    self._async_notify_listeners()
+            else:
+                logger.warning(
+                    "BLE login HMAC mismatch on %s (%d/%d before reauth): %s",
+                    self.address,
+                    self._consecutive_bad_tokens,
+                    MAX_CONSECUTIVE_BAD_TOKENS,
+                    exc,
+                )
+        except AuthError as exc:
+            self._record_failure(str(exc))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._record_failure(f"connection error: {exc}")
+        finally:
+            self._last_disconnect_mono = time.monotonic()
+            if client is not None and client.is_connected:
+                try:
+                    await client.disconnect()
+                except Exception as exc:
+                    logger.debug("Disconnect cleanup error on %s: %s", self.address, exc)
+            if (
+                self.state.connected
+                or self.state.stable
+                or self.state.live_weight_kg is not None
+            ):
+                self.state.connected = False
+                self.state.stable = False
+                self.state.live_weight_kg = None
+                self._async_notify_listeners()
 
     async def _cmtp_pump(
         self,
         client: BleakClient,
         keys: SessionKeys,
         hub: NotifyHub,
-        disconnected_ev: asyncio.Event,
     ) -> None:
         """Drain CMTP notifications, reassemble multi-frame messages, decrypt, and update state."""
-        q = hub.queue(CMTP)
-        expected = 0
-        next_frame = 1
-        buf = b""
-        while not self._stopping and not disconnected_ev.is_set():
+        q: asyncio.Queue[bytes | None] = hub.queue(CMTP)  # type: ignore[assignment]
+        reassembler = CmtpReassembler()
+        while True:
+            data = await q.get()
+            if data is None:
+                break
             try:
-                data = await asyncio.wait_for(q.get(), timeout=1.0)
-            except asyncio.TimeoutError:
+                ack, msg = reassembler.feed(data)
+            except FrameSequenceError as exc:
+                logger.debug("CMTP %s on %s; resetting buffer", exc, self.address)
+                await client.write_gatt_char(CMTP, RCV_OK, response=False)
                 continue
-
-            # Header: 00 00 00 SS LL_LO LL_HI
-            if len(data) >= 6 and data[:3] == b"\x00\x00\x00":
-                expected = data[4] | (data[5] << 8)
-                next_frame = 1
-                buf = b""
-                await client.write_gatt_char(CMTP, RCV_RDY, response=False)
-                continue
-
-            # Data frame: NN_LO NN_HI <payload>
-            if len(data) >= 2 and expected > 0:
-                frame_num = data[0] | (data[1] << 8)
-                if frame_num != next_frame:
-                    logger.debug(
-                        "CMTP frame out of sequence on %s: expected %d, got %d; resetting buffer",
-                        self.address,
-                        next_frame,
-                        frame_num,
-                    )
-                    await client.write_gatt_char(CMTP, RCV_OK, response=False)
-                    expected = 0
-                    next_frame = 1
-                    buf = b""
-                    continue
-                buf += data[2:]
-                next_frame += 1
-                if frame_num >= expected:
-                    await self._handle_full_frame(keys, buf)
-                    await client.write_gatt_char(CMTP, RCV_OK, response=False)
-                    expected = 0
-                    next_frame = 1
-                    buf = b""
+            if msg is not None:
+                await self._handle_full_frame(keys, msg)
+            if ack is not None:
+                await client.write_gatt_char(CMTP, ack, response=False)
 
     async def _handle_full_frame(self, keys: SessionKeys, ciphertext: bytes) -> None:
         pt = decrypt_cmtp(keys, ciphertext)
