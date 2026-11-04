@@ -17,6 +17,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .coordinator import S400ConfigEntry, S400State
 from .entity import S400Entity
 
+PARALLEL_UPDATES = 0
+
 
 @dataclass(frozen=True, kw_only=True)
 class S400BinarySensorEntityDescription(BinarySensorEntityDescription):

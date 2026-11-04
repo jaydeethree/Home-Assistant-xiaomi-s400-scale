@@ -20,6 +20,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .coordinator import S400ConfigEntry, S400State
 from .entity import S400Entity
 
+PARALLEL_UPDATES = 0
 UNIT_OHM = "ohm"
 
 
