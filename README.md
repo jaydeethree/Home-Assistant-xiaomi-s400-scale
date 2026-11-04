@@ -24,7 +24,6 @@ Unlike passive BLE advertisement scanning (which only emits a final reading seve
 - **Weight Stable indicator** — binary sensor indicating when the measurement has stabilized/settled
 - **Final weight reading** — locked reading retained and restored across Home Assistant restarts
 - **Impedance sensors** — bio-electrical impedance and low-frequency impedance readings from the dual-frequency sensors
-- **Event firing** — fires a `xiaomi_s400_scale_measurement` event on the Home Assistant bus upon completion of a measurement
 - **Re-authentication & Reconfiguration** — easily update the BLE login token if the scale is re-paired in the Mi Home app
 
 ---
@@ -80,6 +79,7 @@ If the scale is factory reset or re-paired in the Mi Home app, the BLE token rot
 | `sensor.<device>_weight` | Sensor (`kg`) | Final locked weight measurement (restored across HA restarts) |
 | `sensor.<device>_impedance` | Sensor (`ohm`) | Bio-electrical impedance measurement |
 | `sensor.<device>_low_frequency_impedance` | Sensor (`ohm`) | Low-frequency bio-electrical impedance measurement |
+| `sensor.<device>_last_measurement` | Sensor (`timestamp`) | Diagnostic sensor recording the timestamp of the last completed measurement |
 | `binary_sensor.<device>_weight_stable` | Binary Sensor | Indicates when the live weight measurement has stabilized |
 | `binary_sensor.<device>_connected` | Binary Sensor | Diagnostic sensor indicating an active authenticated BLE connection |
 
