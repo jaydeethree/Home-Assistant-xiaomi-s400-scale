@@ -1,4 +1,4 @@
-"""Mi Home BLE protocol constants and payload parser for Xiaomi S400 Scale."""
+"""Mi Home BLE protocol constants, frame reassembler, and payload parser for Xiaomi S400 Scale."""
 
 from __future__ import annotations
 
@@ -38,6 +38,58 @@ AUTH_ERRORS = {
     bytes.fromhex("e2000000"),
     bytes.fromhex("e3000000"),
 }
+
+
+class FrameSequenceError(ValueError):
+    """Raised when a multi-frame message receives an out-of-sequence frame."""
+
+
+class CmtpReassembler:
+    """Stateful reassembler for Mi Home 2-byte-framed BLE parcels (AVDTP & CMTP)."""
+
+    def __init__(self) -> None:
+        self.expected: int = 0
+        self.next_frame: int = 1
+        self._buf: bytearray = bytearray()
+
+    def reset(self) -> None:
+        """Reset reassembler state."""
+        self.expected = 0
+        self.next_frame = 1
+        self._buf.clear()
+
+    def feed(self, data: bytes) -> tuple[bytes | None, bytes | None]:
+        """Feed a raw notification frame and return `(ack_to_send, completed_message)`.
+
+        Ignores duplicate frames (`frame_num < next_frame`) and raises
+        `FrameSequenceError` after resetting state if a frame skips forward.
+        """
+        if len(data) >= 6 and data[:3] == b"\x00\x00\x00":
+            self.expected = data[4] | (data[5] << 8)
+            self.next_frame = 1
+            self._buf.clear()
+            if self.expected == 0:
+                return RCV_OK, b""
+            return RCV_RDY, None
+
+        if len(data) >= 2 and self.expected > 0:
+            frame_num = data[0] | (data[1] << 8)
+            if frame_num < self.next_frame:
+                return None, None
+            if frame_num > self.next_frame:
+                exp = self.next_frame
+                self.reset()
+                raise FrameSequenceError(
+                    f"frame out of sequence: expected {exp}, got {frame_num}"
+                )
+            self._buf.extend(data[2:])
+            self.next_frame += 1
+            if frame_num >= self.expected:
+                msg = bytes(self._buf)
+                self.reset()
+                return RCV_OK, msg
+
+        return None, None
 
 
 @dataclass
