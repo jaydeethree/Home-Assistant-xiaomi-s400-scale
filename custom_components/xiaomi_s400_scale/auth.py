@@ -154,5 +154,3 @@ async def login(
 
     return keys
 
-
-make_notify_hub = NotifyHub

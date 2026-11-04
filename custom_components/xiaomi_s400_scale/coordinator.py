@@ -17,8 +17,11 @@ from homeassistant.components.bluetooth.match import BluetoothCallbackMatcher
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 
-from .auth import AuthError, BadTokenError, NotifyHub, login, make_notify_hub
-from .const import EVENT_MEASUREMENT
+from .auth import AuthError, BadTokenError, NotifyHub, login
+from .const import (
+    RECONNECT_COOLDOWN_SECONDS,
+    SETTLE_DELAY_SECONDS,
+)
 from .crypto import SessionKeys, decrypt_cmtp
 from .protocol import (
     AVCTP,
@@ -29,13 +32,10 @@ from .protocol import (
     UPNP,
     VEND1A,
     VEND1C,
-    ScaleEvent,
     parse_cmtp_payload,
 )
 
 logger = logging.getLogger(__name__)
-
-RECONNECT_COOLDOWN_SECONDS = 3.0
 
 
 @dataclass
@@ -48,7 +48,6 @@ class S400State:
     stable: bool = False
     impedance_ohm: float | None = None
     impedance_low_ohm: float | None = None
-    profile_id: int | None = None
     device_timestamp: int | None = None
 
 
@@ -168,14 +167,14 @@ class S400Coordinator:
                     disconnected_callback=_on_disconnect,
                     max_attempts=2,
                 )
-                hub = make_notify_hub()
+                hub = NotifyHub()
                 for uuid in (UPNP, AVDTP, AVCTP, VEND1A, CMTP, VEND1C):
                     try:
                         await client.start_notify(uuid, hub.make_callback(uuid))
                     except Exception as exc:
                         logger.debug("Subscribe %s skipped: %s", uuid[:8], exc)
 
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(SETTLE_DELAY_SECONDS)
                 keys = await login(client, self.token, hub)
                 logger.info("Authenticated with Xiaomi S400 Scale (%s)", self.address)
 
@@ -269,12 +268,9 @@ class S400Coordinator:
         if pt is None:
             logger.debug("CMTP decrypt failed on %s: %s", self.address, ciphertext.hex())
             return
-        parsed = parse_cmtp_payload(pt)
-        if parsed is None:
+        event = parse_cmtp_payload(pt)
+        if event is None:
             return
-
-        ev_type = parsed.pop("type")
-        event = ScaleEvent(type=ev_type, **parsed, raw_plaintext=pt)
 
         if event.type == "live":
             if event.weight_kg is not None:
@@ -297,21 +293,7 @@ class S400Coordinator:
                 if (event.impedance_low_ohm and event.impedance_low_ohm > 0)
                 else None
             )
-            if event.profile_id is not None:
-                self.state.profile_id = event.profile_id
             if event.timestamp is not None:
                 self.state.device_timestamp = event.timestamp
 
             self._async_notify_listeners()
-
-            self.hass.bus.async_fire(
-                EVENT_MEASUREMENT,
-                {
-                    "address": self.address,
-                    "weight_kg": self.state.final_weight_kg,
-                    "impedance_ohm": self.state.impedance_ohm,
-                    "impedance_low_ohm": self.state.impedance_low_ohm,
-                    "profile_id": event.profile_id,
-                    "timestamp": event.timestamp,
-                },
-            )

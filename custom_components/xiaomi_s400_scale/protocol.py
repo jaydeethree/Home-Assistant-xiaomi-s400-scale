@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
 # Auth service (0xFE95) characteristic UUIDs
 UPNP = "00000010-0000-1000-8000-00805f9b34fb"   # client -> device commands
@@ -42,20 +42,18 @@ AUTH_ERRORS = {
 
 @dataclass
 class ScaleEvent:
-    """Either a 'live' frame (weight updating) or 'final' (full measurement dump)."""
+    """Either a live frame (weight updating) or final (full measurement dump)."""
 
     type: Literal["live", "final"]
     weight_kg: float | None = None
     stable: bool = False
     impedance_ohm: float | None = None
     impedance_low_ohm: float | None = None
-    profile_id: int | None = None
     timestamp: int | None = None
-    raw_plaintext: bytes | None = None
 
 
-def parse_cmtp_payload(pt: bytes) -> dict[str, Any] | None:
-    """Parse a decrypted CMTP plaintext into structured fields.
+def parse_cmtp_payload(pt: bytes) -> ScaleEvent | None:
+    """Parse a decrypted CMTP plaintext into a ScaleEvent.
 
     Format (observed on yunmai.scales.ms104 / S400):
         LL 20 CC 00 07 08 PP 00 01 PP 00 SS a0 <ascii_csv>
@@ -73,22 +71,21 @@ def parse_cmtp_payload(pt: bytes) -> dict[str, Any] | None:
 
     if len(parts) == 2:
         w = _i(parts[0])
-        return {
-            "type": "live",
-            "weight_kg": w / 10 if w is not None else None,
-            "stable": parts[1] == "1",
-        }
+        return ScaleEvent(
+            type="live",
+            weight_kg=w / 10 if w is not None else None,
+            stable=parts[1] == "1",
+        )
     if len(parts) >= 8:
         w = _i(parts[3])
         imp = _i(parts[-2])
         imp_low = _i(parts[-1])
-        return {
-            "type": "final",
-            "profile_id": _i(parts[2]),
-            "weight_kg": w / 10 if w is not None else None,
-            "stable": parts[4] == "1",
-            "timestamp": _i(parts[6]),
-            "impedance_ohm": imp / 10 if imp is not None else None,
-            "impedance_low_ohm": imp_low / 10 if imp_low is not None else None,
-        }
+        return ScaleEvent(
+            type="final",
+            weight_kg=w / 10 if w is not None else None,
+            stable=parts[4] == "1",
+            timestamp=_i(parts[6]),
+            impedance_ohm=imp / 10 if imp is not None else None,
+            impedance_low_ohm=imp_low / 10 if imp_low is not None else None,
+        )
     return None
