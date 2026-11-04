@@ -1,0 +1,26 @@
+{
+  "entity": {
+    "sensor": {
+      "live_weight": {
+        "default": "mdi:scale-bathroom"
+      },
+      "weight": {
+        "default": "mdi:scale-bathroom"
+      },
+      "impedance": {
+        "default": "mdi:omega"
+      },
+      "impedance_low": {
+        "default": "mdi:omega"
+      },
+      "last_measurement": {
+        "default": "mdi:clock-check-outline"
+      }
+    },
+    "binary_sensor": {
+      "stable": {
+        "default": "mdi:check-circle-outline"
+      }
+    }
+  }
+}
