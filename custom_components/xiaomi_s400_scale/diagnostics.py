@@ -8,8 +8,8 @@ from typing import Any
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 
-from .coordinator import S400ConfigEntry
 from .const import CONF_TOKEN
+from .coordinator import S400ConfigEntry
 
 TO_REDACT = {CONF_TOKEN}
 
@@ -22,6 +22,9 @@ async def async_get_config_entry_diagnostics(
     return {
         "entry": async_redact_data(entry.as_dict(), TO_REDACT),
         "state": asdict(coordinator.state),
-        "auth_failed": coordinator._auth_failed,
-        "connecting": coordinator._connect_lock.locked(),
+        "auth_failed": coordinator.auth_failed,
+        "connecting": coordinator.connecting,
+        "consecutive_failures": coordinator.consecutive_failures,
+        "last_error": coordinator.last_error,
+        "last_connect_time": coordinator.last_connect_time,
     }
