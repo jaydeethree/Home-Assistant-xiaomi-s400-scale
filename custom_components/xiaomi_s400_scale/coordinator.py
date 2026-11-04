@@ -21,6 +21,8 @@ from homeassistant.util import dt as dt_util
 
 from .auth import AuthError, BadTokenError, NotifyHub, login
 from .const import (
+    CMTP_IDLE_TIMEOUT_SECONDS,
+    MAX_RECONNECT_COOLDOWN_SECONDS,
     RECONNECT_COOLDOWN_SECONDS,
     SETTLE_DELAY_SECONDS,
 )
@@ -163,7 +165,11 @@ class S400Coordinator:
         """Handle an advertisement from the scale."""
         if self._stopping or self._auth_failed or self.connecting:
             return
-        if (time.monotonic() - self._last_disconnect_mono) < RECONNECT_COOLDOWN_SECONDS:
+        cooldown = min(
+            RECONNECT_COOLDOWN_SECONDS * (2**self._consecutive_failures),
+            MAX_RECONNECT_COOLDOWN_SECONDS,
+        )
+        if (time.monotonic() - self._last_disconnect_mono) < cooldown:
             return
         self._schedule_connect(service_info.device)
 
@@ -196,6 +202,7 @@ class S400Coordinator:
             hub.queue(CMTP).put_nowait(None)  # type: ignore[arg-type]
 
         client: BleakClientWithServiceCache | None = None
+        authenticated = False
         try:
             logger.debug("Connecting to Xiaomi S400 Scale (%s)...", self.address)
             client = await establish_connection(
@@ -218,7 +225,8 @@ class S400Coordinator:
 
             await asyncio.sleep(SETTLE_DELAY_SECONDS)
             keys = await login(client, self.token, hub)
-            logger.info("Authenticated with Xiaomi S400 Scale (%s)", self.address)
+            authenticated = True
+            logger.debug("Authenticated with Xiaomi S400 Scale (%s)", self.address)
 
             self._consecutive_bad_tokens = 0
             self._consecutive_failures = 0
@@ -241,6 +249,7 @@ class S400Coordinator:
                     exc,
                 )
                 self._auth_failed = True
+                self._async_notify_listeners()
                 self.entry.async_start_reauth(self.hass)
             else:
                 logger.warning(
@@ -255,7 +264,10 @@ class S400Coordinator:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._record_failure(f"connection error: {exc}")
+            if authenticated:
+                logger.debug("BLE session ended on %s: %s", self.address, exc)
+            else:
+                self._record_failure(f"connection error: {exc}")
         finally:
             self._last_disconnect_mono = time.monotonic()
             if client is not None and client.is_connected:
@@ -283,7 +295,16 @@ class S400Coordinator:
         q: asyncio.Queue[bytes | None] = hub.queue(CMTP)  # type: ignore[assignment]
         reassembler = CmtpReassembler()
         while True:
-            data = await q.get()
+            try:
+                async with asyncio.timeout(CMTP_IDLE_TIMEOUT_SECONDS):
+                    data = await q.get()
+            except TimeoutError:
+                logger.debug(
+                    "CMTP stream idle for %ss on %s; ending session",
+                    CMTP_IDLE_TIMEOUT_SECONDS,
+                    self.address,
+                )
+                break
             if data is None:
                 break
             try:
@@ -304,6 +325,7 @@ class S400Coordinator:
             return
         event = parse_cmtp_payload(pt)
         if event is None:
+            logger.debug("Unparsed CMTP payload on %s: %s", self.address, pt.hex())
             return
 
         if event.type == "live":
@@ -313,10 +335,20 @@ class S400Coordinator:
             self._async_notify_listeners()
 
         elif event.type == "final":
-            if event.weight_kg is not None:
-                self.state.live_weight_kg = event.weight_kg
-                self.state.final_weight_kg = event.weight_kg
-            self.state.stable = event.stable
+            if (
+                event.weight_kg is None
+                or event.weight_kg <= 0
+                or not event.stable
+            ):
+                logger.debug(
+                    "Ignoring incomplete/unstable final frame on %s: %s",
+                    self.address,
+                    event,
+                )
+                return
+            self.state.live_weight_kg = event.weight_kg
+            self.state.final_weight_kg = event.weight_kg
+            self.state.stable = True
             self.state.impedance_ohm = (
                 event.impedance_ohm
                 if (event.impedance_ohm and event.impedance_ohm > 0)
