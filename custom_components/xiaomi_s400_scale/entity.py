@@ -45,6 +45,11 @@ class S400Entity(Entity):
             self.coordinator.async_add_listener(self._handle_coordinator_update)
         )
 
+    @property
+    def available(self) -> bool:
+        """Return False if authentication has halted pending reauth."""
+        return not self.coordinator.auth_failed
+
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
