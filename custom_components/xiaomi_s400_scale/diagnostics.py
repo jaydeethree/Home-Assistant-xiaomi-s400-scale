@@ -18,7 +18,10 @@ async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: S400ConfigEntry
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
+    coordinator = entry.runtime_data
     return {
         "entry": async_redact_data(entry.as_dict(), TO_REDACT),
-        "state": asdict(entry.runtime_data.state),
+        "state": asdict(coordinator.state),
+        "auth_failed": coordinator._auth_failed,
+        "connecting": coordinator._connect_lock.locked(),
     }
