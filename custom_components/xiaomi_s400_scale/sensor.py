@@ -67,7 +67,6 @@ SENSORS: tuple[S400SensorEntityDescription, ...] = (
         translation_key="live_weight",
         device_class=SensorDeviceClass.WEIGHT,
         native_unit_of_measurement=UnitOfMass.KILOGRAMS,
-        state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
         value_fn=lambda s: s.live_weight_kg,
     ),
