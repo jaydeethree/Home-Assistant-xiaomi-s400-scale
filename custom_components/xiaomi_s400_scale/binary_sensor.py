@@ -10,19 +10,18 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
     BinarySensorEntityDescription,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
-from .coordinator import S400Coordinator, S400State
+from . import S400ConfigEntry
+from .coordinator import S400State
 from .entity import S400Entity
 
 
 @dataclass(frozen=True, kw_only=True)
 class S400BinarySensorEntityDescription(BinarySensorEntityDescription):
-    """Describe a Xiaomi S400 Scale binary sensor entity."""
+    """Describe a Xiaomi Scale S400 binary sensor entity."""
 
     is_on_fn: Callable[[S400State], bool]
 
@@ -45,11 +44,11 @@ BINARY_SENSORS: tuple[S400BinarySensorEntityDescription, ...] = (
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: S400ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Xiaomi S400 Scale binary sensors from a config entry."""
-    coordinator: S400Coordinator = getattr(entry, "runtime_data", None) or hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data
     async_add_entities(
         S400BinarySensorEntity(coordinator, entry, description)
         for description in BINARY_SENSORS

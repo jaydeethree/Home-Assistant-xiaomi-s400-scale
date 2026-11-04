@@ -6,7 +6,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS, Platform
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_TOKEN, DOMAIN
+from .const import CONF_TOKEN
 from .coordinator import S400Coordinator
 
 type S400ConfigEntry = ConfigEntry[S400Coordinator]
@@ -21,7 +21,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: S400ConfigEntry) -> bool
 
     coordinator = S400Coordinator(hass, entry, address, token)
     entry.runtime_data = coordinator
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -33,7 +32,4 @@ async def async_setup_entry(hass: HomeAssistant, entry: S400ConfigEntry) -> bool
 
 async def async_unload_entry(hass: HomeAssistant, entry: S400ConfigEntry) -> bool:
     """Unload a config entry."""
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
-
-    return unload_ok
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

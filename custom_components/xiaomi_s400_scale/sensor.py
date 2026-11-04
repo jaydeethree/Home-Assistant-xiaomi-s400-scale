@@ -13,13 +13,12 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory, UnitOfMass
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
-from .coordinator import S400Coordinator, S400State
+from . import S400ConfigEntry
+from .coordinator import S400State
 from .entity import S400Entity
 
 UNIT_OHM = "ohm"
@@ -113,11 +112,11 @@ SENSORS: tuple[S400SensorEntityDescription, ...] = (
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: S400ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Xiaomi S400 Scale sensors from a config entry."""
-    coordinator: S400Coordinator = getattr(entry, "runtime_data", None) or hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data
     async_add_entities(
         S400SensorEntity(coordinator, entry, description) for description in SENSORS
     )
