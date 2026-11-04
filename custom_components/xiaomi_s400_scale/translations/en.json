@@ -8,6 +8,10 @@
         "data": {
           "address": "Bluetooth MAC Address (AA:BB:CC:DD:EE:FF)",
           "token": "BLE Login Token (24 hex chars)"
+        },
+        "data_description": {
+          "address": "Select a discovered Xiaomi S400 Scale or type its Bluetooth MAC address (AA:BB:CC:DD:EE:FF).",
+          "token": "24-character hexadecimal token (12 bytes) extracted via Xiaomi-cloud-tokens-extractor."
         }
       },
       "bluetooth_confirm": {
@@ -15,6 +19,9 @@
         "description": "Discovered Xiaomi S400 Scale at `{address}`. Enter its 12-byte (24 hex characters) BLE login token from Xiaomi-cloud-tokens-extractor.",
         "data": {
           "token": "BLE Login Token (24 hex chars)"
+        },
+        "data_description": {
+          "token": "24-character hexadecimal token (12 bytes) extracted via Xiaomi-cloud-tokens-extractor."
         }
       },
       "reauth_confirm": {
@@ -22,6 +29,9 @@
         "description": "The BLE login token for `{address}` was rejected (tokens rotate if the scale is re-paired in Mi Home). Enter the updated 24-hex-character BLE login token.",
         "data": {
           "token": "BLE Login Token (24 hex chars)"
+        },
+        "data_description": {
+          "token": "24-character hexadecimal token (12 bytes) extracted via Xiaomi-cloud-tokens-extractor."
         }
       },
       "reconfigure": {
@@ -29,6 +39,9 @@
         "description": "Update the 12-byte (24 hex characters) BLE login token for `{address}`.",
         "data": {
           "token": "BLE Login Token (24 hex chars)"
+        },
+        "data_description": {
+          "token": "24-character hexadecimal token (12 bytes) extracted via Xiaomi-cloud-tokens-extractor."
         }
       }
     },
