@@ -71,6 +71,8 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
         self, discovery_info: BluetoothServiceInfoBleak
     ) -> ConfigFlowResult:
         """Handle the bluetooth discovery step."""
+        if not _is_s400_service_info(discovery_info):
+            return self.async_abort(reason="not_supported")
         await self.async_set_unique_id(discovery_info.address.upper())
         self._abort_if_unique_id_configured()
         self._discovery_info = discovery_info
