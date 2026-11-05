@@ -51,7 +51,7 @@ async def async_setup_entry(
     """Set up Xiaomi S400 Scale binary sensors from a config entry."""
     coordinator = entry.runtime_data
     async_add_entities(
-        S400BinarySensorEntity(coordinator, entry, description)
+        S400BinarySensorEntity(coordinator, description)
         for description in BINARY_SENSORS
     )
 
