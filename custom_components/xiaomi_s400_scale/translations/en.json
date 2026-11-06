@@ -52,7 +52,8 @@
     "abort": {
       "already_configured": "This scale is already configured.",
       "reauth_successful": "Re-authentication was successful.",
-      "reconfigure_successful": "Reconfiguration was successful."
+      "reconfigure_successful": "Reconfiguration was successful.",
+      "not_supported": "This device is not a supported Xiaomi S400 Scale."
     }
   },
   "entity": {

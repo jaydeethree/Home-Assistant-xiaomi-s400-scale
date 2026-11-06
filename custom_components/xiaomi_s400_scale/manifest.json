@@ -6,6 +6,11 @@
       "service_data_uuid": "0000fe95-0000-1000-8000-00805f9b34fb",
       "local_name": "Xiaomi Scale S400*",
       "connectable": true
+    },
+    {
+      "service_data_uuid": "0000fe95-0000-1000-8000-00805f9b34fb",
+      "local_name": "Body Composition Scale*",
+      "connectable": true
     }
   ],
   "codeowners": ["@jaydeethree"],
