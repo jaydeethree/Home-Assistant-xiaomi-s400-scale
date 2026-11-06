@@ -23,6 +23,7 @@ from homeassistant.util import dt as dt_util
 
 from .auth import AuthError, BadTokenError, DisconnectedError, NotifyHub, login
 from .const import (
+    CMTP_FIRST_FRAME_TIMEOUT_SECONDS,
     CMTP_IDLE_TIMEOUT_SECONDS,
     MAX_RECONNECT_COOLDOWN_SECONDS,
     POST_MEASUREMENT_COOLDOWN_SECONDS,
@@ -93,6 +94,7 @@ class S400Coordinator:
         self._last_error: str | None = None
         self._last_connect_time: datetime | None = None
         self._cooldown_until_mono: float = 0.0
+        self._post_session_cooldown = False
 
     @property
     def auth_failed(self) -> bool:
@@ -183,7 +185,9 @@ class S400Coordinator:
             return
         remaining = self.cooldown_remaining
         if remaining > 0:
-            if self._cancel_cooldown_retry is None:
+            # Schedule a retry only when recovering from a failed connection attempt,
+            # not while winding down from a completed/authenticated session.
+            if not self._post_session_cooldown and self._cancel_cooldown_retry is None:
                 self._cancel_cooldown_retry = async_call_later(
                     self.hass, remaining, self._async_cooldown_expired
                 )
@@ -192,7 +196,7 @@ class S400Coordinator:
 
     @callback
     def _async_cooldown_expired(self, _now: datetime) -> None:
-        """Retry connection after cooldown if the scale is still advertising."""
+        """Retry connection after failure cooldown if the scale is still advertising."""
         self._cancel_cooldown_retry = None
         if self._stopping or self._auth_failed or self.connecting:
             return
@@ -239,7 +243,6 @@ class S400Coordinator:
 
         client: BleakClientWithServiceCache | None = None
         authenticated = False
-        completed_measurement = False
         try:
             logger.debug("Connecting to Xiaomi S400 Scale (%s)...", self.address)
             client = await establish_connection(
@@ -269,7 +272,14 @@ class S400Coordinator:
             await asyncio.sleep(SETTLE_DELAY_SECONDS)
             keys = await login(client, self.token, hub)
             authenticated = True
-            logger.debug("Authenticated with Xiaomi S400 Scale (%s)", self.address)
+            if self._consecutive_failures >= WARN_AFTER_CONSECUTIVE_FAILURES:
+                logger.info(
+                    "Connection to Xiaomi S400 Scale (%s) restored after %d failed attempts",
+                    self.address,
+                    self._consecutive_failures,
+                )
+            else:
+                logger.debug("Authenticated with Xiaomi S400 Scale (%s)", self.address)
 
             self._consecutive_bad_tokens = 0
             self._consecutive_failures = 0
@@ -278,7 +288,7 @@ class S400Coordinator:
             self.state.connected = True
             self._async_notify_listeners()
 
-            completed_measurement = await self._cmtp_pump(client, keys, hub)
+            await self._cmtp_pump(client, keys, hub)
 
         except BadTokenError as exc:
             self._consecutive_bad_tokens += 1
@@ -314,7 +324,8 @@ class S400Coordinator:
             else:
                 self._record_failure(f"connection error: {exc}")
         finally:
-            if completed_measurement:
+            self._post_session_cooldown = authenticated
+            if authenticated:
                 cooldown = POST_MEASUREMENT_COOLDOWN_SECONDS
             else:
                 cooldown = min(
@@ -349,19 +360,26 @@ class S400Coordinator:
         """
         q = hub.queue(CMTP)
         reassembler = CmtpReassembler()
+        received_any_frame = False
         while True:
+            timeout = (
+                CMTP_IDLE_TIMEOUT_SECONDS
+                if received_any_frame
+                else CMTP_FIRST_FRAME_TIMEOUT_SECONDS
+            )
             try:
-                async with asyncio.timeout(CMTP_IDLE_TIMEOUT_SECONDS):
+                async with asyncio.timeout(timeout):
                     data = await q.get()
             except TimeoutError:
                 logger.debug(
                     "CMTP stream idle for %ss on %s; ending session",
-                    CMTP_IDLE_TIMEOUT_SECONDS,
+                    timeout,
                     self.address,
                 )
                 return False
             if data is None:
                 return False
+            received_any_frame = True
             try:
                 ack, msg = reassembler.feed(data)
             except FrameSequenceError as exc:

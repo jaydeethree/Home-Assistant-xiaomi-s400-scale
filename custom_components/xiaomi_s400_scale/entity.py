@@ -8,7 +8,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity, EntityDescription
 
-from .const import DOMAIN, MANUFACTURER, MODEL_NAME
+from .const import DOMAIN, MANUFACTURER, MODEL_ID, MODEL_NAME
 from .coordinator import S400Coordinator
 
 
@@ -36,6 +36,7 @@ class S400Entity(Entity):
             name=entry.title,
             manufacturer=MANUFACTURER,
             model=MODEL_NAME,
+            model_id=MODEL_ID,
         )
 
     @property
