@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+import hmac
 import logging
 import secrets
 
@@ -32,6 +33,10 @@ class AuthError(RuntimeError):
     """Base error during Mi Home v2 BLE login."""
 
 
+class DisconnectedError(AuthError):
+    """BLE connection dropped during login or streaming."""
+
+
 class BadTokenError(AuthError):
     """HMAC verification failed — token is wrong or has rotated."""
 
@@ -40,12 +45,22 @@ class NotifyHub:
     """Bridges BleakClient notify callbacks to per-UUID asyncio.Queues."""
 
     def __init__(self) -> None:
-        self.queues: dict[str, asyncio.Queue[bytes]] = {}
+        self.queues: dict[str, asyncio.Queue[bytes | None]] = {}
+        self._disconnected = False
 
-    def queue(self, uuid: str) -> asyncio.Queue[bytes]:
+    def queue(self, uuid: str) -> asyncio.Queue[bytes | None]:
         if uuid not in self.queues:
-            self.queues[uuid] = asyncio.Queue()
+            q: asyncio.Queue[bytes | None] = asyncio.Queue()
+            if self._disconnected:
+                q.put_nowait(None)
+            self.queues[uuid] = q
         return self.queues[uuid]
+
+    def mark_disconnected(self) -> None:
+        """Wake all waiting queues with a None sentinel on BLE disconnect."""
+        self._disconnected = True
+        for q in self.queues.values():
+            q.put_nowait(None)
 
     def make_callback(self, uuid: str) -> Callable[[int, bytearray], None]:
         q = self.queue(uuid)
@@ -57,12 +72,15 @@ class NotifyHub:
 
 
 async def _wait(
-    q: asyncio.Queue[bytes], timeout: float, label: str = "notification"
+    q: asyncio.Queue[bytes | None], timeout: float, label: str = "notification"
 ) -> bytes:
     try:
-        return await asyncio.wait_for(q.get(), timeout=timeout)
+        data = await asyncio.wait_for(q.get(), timeout=timeout)
     except TimeoutError as exc:
         raise AuthError(f"timeout waiting for {label}") from exc
+    if data is None:
+        raise DisconnectedError(f"device disconnected while waiting for {label}")
+    return data
 
 
 async def _write(client: BleakClient, uuid: str, data: bytes) -> None:
@@ -86,7 +104,7 @@ async def _write_parcel(
 
 
 async def _recv_multiframe(
-    client: BleakClient, q: asyncio.Queue[bytes], timeout: float = 5.0
+    client: BleakClient, q: asyncio.Queue[bytes | None], timeout: float = 5.0
 ) -> bytes:
     reassembler = CmtpReassembler()
     first = await _wait(q, timeout, "multiframe header")
@@ -144,7 +162,7 @@ async def login(
 
     keys = derive_login_keys(token, app_rand, dev_rand)
     expected_remote = hmac_sha256(keys.dev_key, dev_rand + app_rand)
-    if remote_info != expected_remote:
+    if not hmac.compare_digest(remote_info, expected_remote):
         raise BadTokenError("HMAC mismatch — token is wrong or has rotated")
 
     our_info = hmac_sha256(keys.app_key, app_rand + dev_rand)

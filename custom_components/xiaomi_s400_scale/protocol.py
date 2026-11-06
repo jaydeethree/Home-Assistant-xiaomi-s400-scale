@@ -111,7 +111,12 @@ def parse_cmtp_payload(pt: bytes) -> ScaleEvent | None:
     Live (2 fields): "weight_x10,stable_flag"
     Final (32 fields): "0,0,profile,weight_x10,stable,2,unix_ts,0..0,imp_x10,imp_low_x10"
     """
-    idx = pt.find(b"\xa0")
+    if len(pt) > 12 and pt[12] == 0xA0:
+        idx = 12
+    else:
+        idx = pt.find(b"\xa0", 12)
+        if idx < 0:
+            idx = pt.find(b"\xa0")
     if idx < 0:
         return None
     s = pt[idx + 1 :].decode("ascii", errors="replace").rstrip("\x00").strip()
