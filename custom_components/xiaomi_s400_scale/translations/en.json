@@ -59,7 +59,7 @@
   "entity": {
     "sensor": {
       "live_weight": {
-        "name": "Live Weight"
+        "name": "Live weight"
       },
       "weight": {
         "name": "Weight"
@@ -68,15 +68,15 @@
         "name": "Impedance"
       },
       "impedance_low": {
-        "name": "Low-Frequency Impedance"
+        "name": "Low-frequency impedance"
       },
       "last_measurement": {
-        "name": "Last Measurement"
+        "name": "Last measurement"
       }
     },
     "binary_sensor": {
       "stable": {
-        "name": "Weight Stable"
+        "name": "Weight stable"
       },
       "connected": {
         "name": "Connected"
