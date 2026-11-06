@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 from cryptography.hazmat.primitives.hmac import HMAC
@@ -57,5 +58,5 @@ def decrypt_cmtp(keys: SessionKeys, raw: bytes) -> bytes | None:
         ct = raw[2:]
         nonce = keys.dev_iv + bytes(4) + it + bytes(2)
         return AESCCM(keys.dev_key, tag_length=4).decrypt(nonce, ct, None)
-    except Exception:
+    except (InvalidTag, ValueError):
         return None
