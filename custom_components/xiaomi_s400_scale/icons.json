@@ -19,7 +19,11 @@
     },
     "binary_sensor": {
       "stable": {
-        "default": "mdi:check-circle-outline"
+        "default": "mdi:check-circle-outline",
+        "state": {
+          "off": "mdi:progress-clock",
+          "on": "mdi:check-circle-outline"
+        }
       }
     }
   }

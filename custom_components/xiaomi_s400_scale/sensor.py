@@ -21,7 +21,7 @@ from .coordinator import S400ConfigEntry, S400State
 from .entity import S400Entity
 
 PARALLEL_UPDATES = 0
-UNIT_OHM = "ohm"
+UNIT_OHM = "\u03a9"
 
 
 @dataclass(frozen=True, kw_only=True)
