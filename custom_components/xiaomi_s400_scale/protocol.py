@@ -39,6 +39,8 @@ AUTH_ERRORS = {
     bytes.fromhex("e3000000"),
 }
 
+MAX_WEIGHT_KG = 500.0
+
 
 class FrameSequenceError(ValueError):
     """Raised when a multi-frame message receives an out-of-sequence frame."""
@@ -111,12 +113,9 @@ def parse_cmtp_payload(pt: bytes) -> ScaleEvent | None:
     Live (2 fields): "weight_x10,stable_flag"
     Final (32 fields): "0,0,profile,weight_x10,stable,2,unix_ts,0..0,imp_x10,imp_low_x10"
     """
-    if len(pt) > 12 and pt[12] == 0xA0:
-        idx = 12
-    else:
-        idx = pt.find(b"\xa0", 12)
-        if idx < 0:
-            idx = pt.find(b"\xa0")
+    if len(pt) <= 12:
+        return None
+    idx = 12 if pt[12] == 0xA0 else pt.find(b"\xa0", 12)
     if idx < 0:
         return None
     s = pt[idx + 1 :].decode("ascii", errors="replace").rstrip("\x00").strip()
@@ -127,18 +126,22 @@ def parse_cmtp_payload(pt: bytes) -> ScaleEvent | None:
 
     if len(parts) == 2:
         w = _i(parts[0])
+        if w is None or not (0 <= w <= MAX_WEIGHT_KG * 10):
+            return None
         return ScaleEvent(
             type="live",
-            weight_kg=w / 10 if w is not None else None,
+            weight_kg=w / 10,
             stable=parts[1] == "1",
         )
     if len(parts) >= 8:
         w = _i(parts[3])
+        if w is None or not (0 <= w <= MAX_WEIGHT_KG * 10):
+            return None
         imp = _i(parts[-2])
         imp_low = _i(parts[-1])
         return ScaleEvent(
             type="final",
-            weight_kg=w / 10 if w is not None else None,
+            weight_kg=w / 10,
             stable=parts[4] == "1",
             impedance_ohm=imp / 10 if imp is not None else None,
             impedance_low_ohm=imp_low / 10 if imp_low is not None else None,
