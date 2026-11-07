@@ -30,7 +30,7 @@ HEX_24_REGEX = re.compile(r"^[0-9A-Fa-f]{24}$")
 
 
 def _clean_token(raw: str) -> str:
-    return raw.strip().replace(" ", "").lower()
+    return re.sub(r"[\s:-]", "", raw).lower()
 
 
 def _clean_mac(raw: str) -> str:
@@ -104,13 +104,14 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                     },
                 )
 
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_TOKEN): str,
+            }
+        )
         return self.async_show_form(
             step_id="bluetooth_confirm",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_TOKEN): str,
-                }
-            ),
+            data_schema=self.add_suggested_values_to_schema(schema, user_input),
             description_placeholders={
                 "address": self._discovery_info.address.upper(),
                 "name": default_name,
@@ -124,6 +125,19 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle the manual user step."""
         errors: dict[str, str] = {}
 
+        options: list[SelectOptionDict] = []
+        discovered_names: dict[str, str] = {}
+        current_ids = self._async_current_ids()
+        for info in async_discovered_service_info(self.hass, connectable=True):
+            addr = info.address.upper()
+            if addr in current_ids:
+                continue
+            if _is_s400_service_info(info):
+                if info.name:
+                    discovered_names[addr] = info.name
+                label = f"{info.name} ({addr})" if info.name else addr
+                options.append(SelectOptionDict(value=addr, label=label))
+
         if user_input is not None:
             address = _clean_mac(user_input[CONF_ADDRESS])
             if not MAC_REGEX.match(address):
@@ -133,23 +147,17 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             if not errors and token is not None:
                 await self.async_set_unique_id(address, raise_on_progress=False)
                 self._abort_if_unique_id_configured()
+                title = (
+                    discovered_names.get(address)
+                    or f"Xiaomi S400 Scale ({address[-5:]})"
+                )
                 return self.async_create_entry(
-                    title=f"Xiaomi S400 Scale ({address[-5:]})",
+                    title=title,
                     data={
                         CONF_ADDRESS: address,
                         CONF_TOKEN: token,
                     },
                 )
-
-        options: list[SelectOptionDict] = []
-        current_ids = self._async_current_ids()
-        for info in async_discovered_service_info(self.hass, connectable=True):
-            addr = info.address.upper()
-            if addr in current_ids:
-                continue
-            if _is_s400_service_info(info):
-                label = f"{info.name} ({addr})" if info.name else addr
-                options.append(SelectOptionDict(value=addr, label=label))
 
         address_selector: Any = (
             SelectSelector(
@@ -163,14 +171,15 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             else str
         )
 
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_ADDRESS): address_selector,
+                vol.Required(CONF_TOKEN): str,
+            }
+        )
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_ADDRESS): address_selector,
-                    vol.Required(CONF_TOKEN): str,
-                }
-            ),
+            data_schema=self.add_suggested_values_to_schema(schema, user_input),
             errors=errors,
         )
 
@@ -191,14 +200,15 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                     data_updates={CONF_TOKEN: token},
                 )
 
-        token_field = (
-            vol.Required(CONF_TOKEN, default=default_token)
-            if default_token
-            else vol.Required(CONF_TOKEN)
+        schema = vol.Schema({vol.Required(CONF_TOKEN): str})
+        suggested_values = (
+            user_input
+            if user_input is not None
+            else ({CONF_TOKEN: default_token} if default_token else None)
         )
         return self.async_show_form(
             step_id=step_id,
-            data_schema=vol.Schema({token_field: str}),
+            data_schema=self.add_suggested_values_to_schema(schema, suggested_values),
             description_placeholders={
                 "address": entry.data[CONF_ADDRESS],
             },

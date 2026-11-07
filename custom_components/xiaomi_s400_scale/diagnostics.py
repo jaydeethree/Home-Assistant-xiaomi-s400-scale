@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import time
 from typing import Any
 
 from homeassistant.components import bluetooth
@@ -12,6 +13,7 @@ from homeassistant.core import HomeAssistant
 
 from .const import CONF_TOKEN
 from .coordinator import S400ConfigEntry
+from .protocol import MIBEACON_SERVICE_UUID
 
 TO_REDACT = {CONF_ADDRESS, CONF_TOKEN, "title", "unique_id"}
 
@@ -26,11 +28,23 @@ async def async_get_config_entry_diagnostics(
     )
     bt_info: dict[str, Any] | None = None
     if service_info is not None:
+        mibeacon = service_info.service_data.get(MIBEACON_SERVICE_UUID)
+        product_id: str | None = None
+        frame_counter: int | None = None
+        if mibeacon is not None and len(mibeacon) >= 4:
+            product_id = f"0x{int.from_bytes(mibeacon[2:4], 'little'):04x}"
+            if len(mibeacon) >= 5:
+                frame_counter = mibeacon[4]
         bt_info = {
+            "name": service_info.name,
             "connectable": service_info.connectable,
             "rssi": service_info.rssi,
             "source": service_info.source,
-            "time": service_info.time,
+            "seconds_since_last_advertisement": round(
+                max(0.0, time.monotonic() - service_info.time), 1
+            ),
+            "mibeacon_product_id": product_id,
+            "mibeacon_frame_counter": frame_counter,
         }
 
     return {
