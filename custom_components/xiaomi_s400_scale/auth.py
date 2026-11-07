@@ -99,7 +99,8 @@ async def _write_parcel(
         chunk = data[i : i + chunk_size]
         n = i // chunk_size + 1
         framed = bytes([n & 0xFF, (n >> 8) & 0xFF]) + chunk
-        await _write(client, uuid, framed)
+        logger.debug("-> %s parcel frame %d (%dB)", uuid[:8], n, len(chunk))
+        await client.write_gatt_char(uuid, framed, response=False)
         await asyncio.sleep(frame_delay)
 
 
@@ -138,7 +139,6 @@ async def login(
     upnp_q = hub.queue(UPNP)
 
     app_rand = secrets.token_bytes(16)
-    logger.debug("app rand=%s", app_rand.hex())
 
     await _write(client, UPNP, CMD_LOGIN)
     await _write(client, AVDTP, CMD_SEND_KEY)
@@ -152,13 +152,11 @@ async def login(
 
     dev_rand = await _recv_multiframe(client, avdtp_q, timeout)
     if len(dev_rand) != 16:
-        raise AuthError(f"bad dev rand len {len(dev_rand)}: {dev_rand.hex()}")
-    logger.debug("dev rand=%s", dev_rand.hex())
+        raise AuthError(f"bad dev rand len {len(dev_rand)}")
 
     remote_info = await _recv_multiframe(client, avdtp_q, timeout)
     if len(remote_info) != 32:
-        raise AuthError(f"bad remote_info len {len(remote_info)}: {remote_info.hex()}")
-    logger.debug("remote_info=%s", remote_info.hex())
+        raise AuthError(f"bad remote_info len {len(remote_info)}")
 
     keys = derive_login_keys(token, app_rand, dev_rand)
     expected_remote = hmac_sha256(keys.dev_key, dev_rand + app_rand)
