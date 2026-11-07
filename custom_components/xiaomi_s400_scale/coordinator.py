@@ -12,6 +12,7 @@ import time
 
 from bleak import BleakClient
 from bleak.backends.device import BLEDevice
+from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
 from homeassistant.components import bluetooth
@@ -25,8 +26,10 @@ from .auth import AuthError, BadTokenError, DisconnectedError, NotifyHub, login
 from .const import (
     CMTP_FIRST_FRAME_TIMEOUT_SECONDS,
     CMTP_IDLE_TIMEOUT_SECONDS,
+    IDLE_SESSION_COOLDOWN_SECONDS,
     MAX_RECONNECT_COOLDOWN_SECONDS,
     POST_MEASUREMENT_COOLDOWN_SECONDS,
+    RECENT_ADVERTISEMENT_SECONDS,
     RECONNECT_COOLDOWN_SECONDS,
     SETTLE_DELAY_SECONDS,
 )
@@ -196,15 +199,19 @@ class S400Coordinator:
 
     @callback
     def _async_cooldown_expired(self, _now: datetime) -> None:
-        """Retry connection after failure cooldown if the scale is still advertising."""
+        """Retry connection after failure cooldown if the scale advertised recently."""
         self._cancel_cooldown_retry = None
         if self._stopping or self._auth_failed or self.connecting:
             return
-        ble_device = bluetooth.async_ble_device_from_address(
+        service_info = bluetooth.async_last_service_info(
             self.hass, self.address, connectable=True
         )
-        if ble_device is not None:
-            self._schedule_connect(ble_device)
+        if (
+            service_info is None
+            or (time.monotonic() - service_info.time) > RECENT_ADVERTISEMENT_SECONDS
+        ):
+            return
+        self._schedule_connect(service_info.device)
 
     @callback
     def _schedule_connect(self, ble_device: BLEDevice) -> None:
@@ -243,6 +250,7 @@ class S400Coordinator:
 
         client: BleakClientWithServiceCache | None = None
         authenticated = False
+        received_frames = False
         try:
             logger.debug("Connecting to Xiaomi S400 Scale (%s)...", self.address)
             client = await establish_connection(
@@ -258,15 +266,15 @@ class S400Coordinator:
             try:
                 for uuid in REQUIRED_NOTIFY_UUIDS:
                     await client.start_notify(uuid, hub.make_callback(uuid))
-            except Exception:
-                with contextlib.suppress(Exception):
+            except (BleakError, TimeoutError, EOFError, OSError):
+                with contextlib.suppress(BleakError, TimeoutError, EOFError, OSError):
                     await client.clear_cache()
                 raise
 
             for uuid in OPTIONAL_NOTIFY_UUIDS:
                 try:
                     await client.start_notify(uuid, hub.make_callback(uuid))
-                except Exception as exc:
+                except (BleakError, TimeoutError, EOFError, OSError) as exc:
                     logger.debug("Optional subscribe %s skipped: %s", uuid[:8], exc)
 
             await asyncio.sleep(SETTLE_DELAY_SECONDS)
@@ -288,7 +296,7 @@ class S400Coordinator:
             self.state.connected = True
             self._async_notify_listeners()
 
-            await self._cmtp_pump(client, keys, hub)
+            received_frames = await self._cmtp_pump(client, keys, hub)
 
         except BadTokenError as exc:
             self._consecutive_bad_tokens += 1
@@ -313,20 +321,31 @@ class S400Coordinator:
                     exc,
                 )
         except DisconnectedError as exc:
-            logger.debug("BLE disconnected on %s: %s", self.address, exc)
+            if authenticated:
+                logger.debug("BLE disconnected on %s: %s", self.address, exc)
+            else:
+                self._record_failure(str(exc))
         except AuthError as exc:
             self._record_failure(str(exc))
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
+        except (BleakError, TimeoutError, EOFError, OSError) as exc:
             if authenticated:
                 logger.debug("BLE session ended on %s: %s", self.address, exc)
             else:
                 self._record_failure(f"connection error: {exc}")
+        except Exception as exc:
+            if not authenticated:
+                self._record_failure(f"unexpected error: {exc}")
+            logger.exception("Unexpected error in BLE session on %s", self.address)
         finally:
             self._post_session_cooldown = authenticated
             if authenticated:
-                cooldown = POST_MEASUREMENT_COOLDOWN_SECONDS
+                cooldown = (
+                    POST_MEASUREMENT_COOLDOWN_SECONDS
+                    if received_frames
+                    else IDLE_SESSION_COOLDOWN_SECONDS
+                )
             else:
                 cooldown = min(
                     RECONNECT_COOLDOWN_SECONDS * (2**self._consecutive_failures),
@@ -336,7 +355,7 @@ class S400Coordinator:
             if client is not None and client.is_connected:
                 try:
                     await client.disconnect()
-                except Exception as exc:
+                except (BleakError, TimeoutError, EOFError, OSError) as exc:
                     logger.debug("Disconnect cleanup error on %s: %s", self.address, exc)
             if (
                 self.state.connected
@@ -356,7 +375,7 @@ class S400Coordinator:
     ) -> bool:
         """Drain CMTP notifications, reassemble multi-frame messages, decrypt, and update state.
 
-        Returns True if a valid final measurement frame was received and processed.
+        Returns True if at least one CMTP frame was received during the session.
         """
         q = hub.queue(CMTP)
         reassembler = CmtpReassembler()
@@ -376,9 +395,9 @@ class S400Coordinator:
                     timeout,
                     self.address,
                 )
-                return False
+                return received_any_frame
             if data is None:
-                return False
+                return received_any_frame
             received_any_frame = True
             try:
                 ack, msg = reassembler.feed(data)
