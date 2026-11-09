@@ -15,7 +15,7 @@ from .const import CONF_TOKEN
 from .coordinator import S400ConfigEntry
 from .protocol import MIBEACON_SERVICE_UUID
 
-TO_REDACT = {CONF_ADDRESS, CONF_TOKEN, "title", "unique_id"}
+TO_REDACT = {CONF_ADDRESS, CONF_TOKEN, "discovery_keys", "title", "unique_id"}
 
 
 async def async_get_config_entry_diagnostics(
