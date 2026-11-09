@@ -13,7 +13,11 @@ import time
 from bleak import BleakClient
 from bleak.backends.device import BLEDevice
 from bleak.exc import BleakError
-from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
+from bleak_retry_connector import (
+    BleakClientWithServiceCache,
+    BleakOutOfConnectionSlotsError,
+    establish_connection,
+)
 
 from homeassistant.components import bluetooth
 from homeassistant.components.bluetooth.match import BluetoothCallbackMatcher
@@ -101,7 +105,7 @@ class S400Coordinator:
         self._last_error: str | None = None
         self._last_connect_time: datetime | None = None
         self._cooldown_until_mono: float = 0.0
-        self._idle_session_cooldown = False
+        self._post_session_cooldown = False
 
     @property
     def auth_failed(self) -> bool:
@@ -194,18 +198,24 @@ class S400Coordinator:
             return
         remaining = self.cooldown_remaining
         if remaining > 0:
-            # Schedule a retry unless we are in the long cooldown after an idle
-            # session that received zero measurement frames.
-            if not self._idle_session_cooldown and self._cancel_cooldown_retry is None:
+            # Schedule a retry only when recovering from a failed connection attempt,
+            # not while winding down after an authenticated session.
+            if not self._post_session_cooldown and self._cancel_cooldown_retry is None:
                 self._cancel_cooldown_retry = async_call_later(
                     self.hass, remaining, self._async_cooldown_expired
                 )
             return
-        self._schedule_connect(service_info.device)
+        ble_device = (
+            bluetooth.async_ble_device_from_address(
+                self.hass, self.address, connectable=True
+            )
+            or service_info.device
+        )
+        self._schedule_connect(ble_device)
 
     @callback
     def _async_cooldown_expired(self, _now: datetime) -> None:
-        """Retry connection after cooldown if the scale advertised recently."""
+        """Retry connection after failure cooldown if the scale advertised recently."""
         self._cancel_cooldown_retry = None
         if self._stopping or self._auth_failed or self.connecting:
             return
@@ -217,7 +227,13 @@ class S400Coordinator:
             or (time.monotonic() - service_info.time) > RECENT_ADVERTISEMENT_SECONDS
         ):
             return
-        self._schedule_connect(service_info.device)
+        ble_device = (
+            bluetooth.async_ble_device_from_address(
+                self.hass, self.address, connectable=True
+            )
+            or service_info.device
+        )
+        self._schedule_connect(ble_device)
 
     @callback
     def _schedule_connect(self, ble_device: BLEDevice) -> None:
@@ -265,8 +281,11 @@ class S400Coordinator:
                 self.address,
                 disconnected_callback=_on_disconnect,
                 max_attempts=2,
-                ble_device_callback=lambda: bluetooth.async_ble_device_from_address(
-                    self.hass, self.address, connectable=True
+                ble_device_callback=lambda: (
+                    bluetooth.async_ble_device_from_address(
+                        self.hass, self.address, connectable=True
+                    )
+                    or ble_device
                 ),
             )
             try:
@@ -335,6 +354,13 @@ class S400Coordinator:
             self._record_failure(str(exc))
         except asyncio.CancelledError:
             raise
+        except BleakOutOfConnectionSlotsError as exc:
+            if authenticated:
+                logger.debug("BLE session ended on %s: %s", self.address, exc)
+            else:
+                self._record_failure(
+                    f"all Bluetooth adapter/proxy connection slots are in use: {exc}"
+                )
         except (BleakError, TimeoutError, EOFError, OSError) as exc:
             if authenticated:
                 logger.debug("BLE session ended on %s: %s", self.address, exc)
@@ -345,7 +371,7 @@ class S400Coordinator:
                 self._record_failure(f"unexpected error: {exc}")
             logger.exception("Unexpected error in BLE session on %s", self.address)
         finally:
-            self._idle_session_cooldown = authenticated and not received_frames
+            self._post_session_cooldown = authenticated
             if authenticated:
                 cooldown = (
                     POST_MEASUREMENT_COOLDOWN_SECONDS
