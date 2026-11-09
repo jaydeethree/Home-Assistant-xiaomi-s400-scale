@@ -57,6 +57,10 @@ REQUIRED_NOTIFY_UUIDS = (UPNP, AVDTP, CMTP)
 OPTIONAL_NOTIFY_UUIDS = (AVCTP, VEND1A, VEND1C)
 
 
+def _ignore_optional_notify(_handle: int, _data: bytearray) -> None:
+    """No-op callback for optional characteristics whose notifications are unused."""
+
+
 @dataclass
 class S400State:
     """Current state of the Xiaomi S400 Scale."""
@@ -97,7 +101,7 @@ class S400Coordinator:
         self._last_error: str | None = None
         self._last_connect_time: datetime | None = None
         self._cooldown_until_mono: float = 0.0
-        self._post_session_cooldown = False
+        self._idle_session_cooldown = False
 
     @property
     def auth_failed(self) -> bool:
@@ -154,7 +158,7 @@ class S400Coordinator:
             self.hass,
             self._async_on_bluetooth_event,
             BluetoothCallbackMatcher(address=self.address, connectable=True),
-            bluetooth.BluetoothScanningMode.ACTIVE,
+            bluetooth.BluetoothScanningMode.PASSIVE,
         )
 
     async def async_stop(self) -> None:
@@ -186,11 +190,13 @@ class S400Coordinator:
         """Handle an advertisement from the scale."""
         if self._stopping or self._auth_failed or self.connecting:
             return
+        if (time.monotonic() - service_info.time) > RECENT_ADVERTISEMENT_SECONDS:
+            return
         remaining = self.cooldown_remaining
         if remaining > 0:
-            # Schedule a retry only when recovering from a failed connection attempt,
-            # not while winding down from a completed/authenticated session.
-            if not self._post_session_cooldown and self._cancel_cooldown_retry is None:
+            # Schedule a retry unless we are in the long cooldown after an idle
+            # session that received zero measurement frames.
+            if not self._idle_session_cooldown and self._cancel_cooldown_retry is None:
                 self._cancel_cooldown_retry = async_call_later(
                     self.hass, remaining, self._async_cooldown_expired
                 )
@@ -199,7 +205,7 @@ class S400Coordinator:
 
     @callback
     def _async_cooldown_expired(self, _now: datetime) -> None:
-        """Retry connection after failure cooldown if the scale advertised recently."""
+        """Retry connection after cooldown if the scale advertised recently."""
         self._cancel_cooldown_retry = None
         if self._stopping or self._auth_failed or self.connecting:
             return
@@ -273,7 +279,7 @@ class S400Coordinator:
 
             for uuid in OPTIONAL_NOTIFY_UUIDS:
                 try:
-                    await client.start_notify(uuid, hub.make_callback(uuid))
+                    await client.start_notify(uuid, _ignore_optional_notify)
                 except (BleakError, TimeoutError, EOFError, OSError) as exc:
                     logger.debug("Optional subscribe %s skipped: %s", uuid[:8], exc)
 
@@ -339,7 +345,7 @@ class S400Coordinator:
                 self._record_failure(f"unexpected error: {exc}")
             logger.exception("Unexpected error in BLE session on %s", self.address)
         finally:
-            self._post_session_cooldown = authenticated
+            self._idle_session_cooldown = authenticated and not received_frames
             if authenticated:
                 cooldown = (
                     POST_MEASUREMENT_COOLDOWN_SECONDS
