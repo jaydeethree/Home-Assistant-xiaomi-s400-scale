@@ -122,7 +122,7 @@ def parse_cmtp_payload(pt: bytes) -> ScaleEvent | None:
     parts = s.split(",")
 
     def _i(p: str) -> int | None:
-        return int(p) if p.lstrip("-").isdigit() else None
+        return int(p) if p.isdigit() else None
 
     if len(parts) == 2:
         if parts[1] not in ("0", "1"):
