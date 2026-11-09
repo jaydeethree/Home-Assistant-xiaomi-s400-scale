@@ -125,8 +125,10 @@ def parse_cmtp_payload(pt: bytes) -> ScaleEvent | None:
         return int(p) if p.lstrip("-").isdigit() else None
 
     if len(parts) == 2:
+        if parts[1] not in ("0", "1"):
+            return None
         w = _i(parts[0])
-        if w is None or not (0 <= w <= MAX_WEIGHT_KG * 10):
+        if w is None or not (0 < w <= MAX_WEIGHT_KG * 10):
             return None
         return ScaleEvent(
             type="live",
@@ -134,8 +136,10 @@ def parse_cmtp_payload(pt: bytes) -> ScaleEvent | None:
             stable=parts[1] == "1",
         )
     if len(parts) >= 8:
+        if parts[4] not in ("0", "1") or _i(parts[6]) is None:
+            return None
         w = _i(parts[3])
-        if w is None or not (0 <= w <= MAX_WEIGHT_KG * 10):
+        if w is None or not (0 < w <= MAX_WEIGHT_KG * 10):
             return None
         imp = _i(parts[-2])
         imp_low = _i(parts[-1])
