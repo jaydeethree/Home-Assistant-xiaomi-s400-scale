@@ -109,6 +109,9 @@ class S400Coordinator:
         self._last_session_duration_s: float | None = None
         self._longest_session_duration_s: float | None = None
         self._last_disconnect_reason: str | None = None
+        self._last_final_signature: (
+            tuple[int, float, float | None, float | None, int | None] | None
+        ) = None
 
     @property
     def auth_failed(self) -> bool:
@@ -661,28 +664,47 @@ class S400Coordinator:
                     event,
                 )
                 return
-            self.state.live_weight_kg = event.weight_kg
-            self.state.final_weight_kg = event.weight_kg
-            self.state.stable = True
-            self.state.impedance_ohm = (
+            impedance_ohm = (
                 event.impedance_ohm
                 if (event.impedance_ohm and event.impedance_ohm > 0)
                 else None
             )
-            self.state.impedance_low_ohm = (
+            impedance_low_ohm = (
                 event.impedance_low_ohm
                 if (event.impedance_low_ohm and event.impedance_low_ohm > 0)
                 else None
             )
+            if event.device_timestamp is not None and event.device_timestamp > 0:
+                signature = (
+                    event.device_timestamp,
+                    event.weight_kg,
+                    impedance_ohm,
+                    impedance_low_ohm,
+                    event.profile_id,
+                )
+                if signature == self._last_final_signature:
+                    _LOGGER.debug(
+                        "Ignoring duplicate final frame on %s (device_timestamp=%s)",
+                        self.address,
+                        event.device_timestamp,
+                    )
+                    return
+                self._last_final_signature = signature
+            self.state.live_weight_kg = event.weight_kg
+            self.state.final_weight_kg = event.weight_kg
+            self.state.stable = True
+            self.state.impedance_ohm = impedance_ohm
+            self.state.impedance_low_ohm = impedance_low_ohm
             self.state.profile_id = event.profile_id
             self.state.last_measurement = dt_util.utcnow()
             _LOGGER.debug(
-                "Final measurement on %s: weight=%s kg, impedance=%s ohm, impedance_low=%s ohm, profile_id=%s",
+                "Final measurement on %s: weight=%s kg, impedance=%s ohm, impedance_low=%s ohm, profile_id=%s, device_timestamp=%s",
                 self.address,
                 self.state.final_weight_kg,
                 self.state.impedance_ohm,
                 self.state.impedance_low_ohm,
                 self.state.profile_id,
+                event.device_timestamp,
             )
 
             self._async_notify_measurement_listeners()
