@@ -90,7 +90,7 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
     async def _async_validate_connection(self, address: str, token_hex: str) -> str | None:
         """Connect to the scale and verify the Mi Home v2 BLE login token.
 
-        Returns None on success, or an error key ('cannot_connect' or 'invalid_auth').
+        Returns None on success, or an error key ('cannot_connect', 'invalid_auth', or 'unknown').
         """
         ble_device = async_ble_device_from_address(
             self.hass, address, connectable=True
@@ -132,6 +132,9 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
         except (AuthError, BleakError, TimeoutError, EOFError, OSError) as exc:
             _LOGGER.debug("BLE connection test failed on %s: %s", address, exc)
             return "cannot_connect"
+        except Exception:
+            _LOGGER.exception("Unexpected error validating BLE connection on %s", address)
+            return "unknown"
         finally:
             if client is not None and client.is_connected:
                 try:
@@ -282,16 +285,26 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                     and hasattr(entry, "runtime_data")
                     else None
                 )
-                if coordinator is not None:
-                    await coordinator.async_stop()
-                err = await self._async_validate_connection(address, token)
-                if err is None:
-                    return self.async_update_reload_and_abort(
-                        entry,
-                        data_updates={CONF_TOKEN: token},
-                    )
-                if coordinator is not None and not coordinator.auth_failed:
-                    coordinator.async_start()
+                restart_coordinator = coordinator is not None
+                try:
+                    if coordinator is not None:
+                        await coordinator.async_stop()
+                    err = await self._async_validate_connection(address, token)
+                    if err is None:
+                        restart_coordinator = False
+                        return self.async_update_reload_and_abort(
+                            entry,
+                            data_updates={CONF_TOKEN: token},
+                        )
+                finally:
+                    if (
+                        restart_coordinator
+                        and coordinator is not None
+                        and entry.state is ConfigEntryState.LOADED
+                        and not self.hass.is_stopping
+                        and not coordinator.auth_failed
+                    ):
+                        coordinator.async_start()
                 errors[CONF_TOKEN if err == "invalid_auth" else "base"] = err
 
         schema = vol.Schema({vol.Required(CONF_TOKEN): TEXT_SELECTOR})
