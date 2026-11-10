@@ -83,9 +83,10 @@ If the scale is factory reset or re-paired in the Mi Home app, the BLE token rot
 | `sensor.<device>_last_measurement` | Sensor (`timestamp`) | Timestamp of the last completed measurement (restored across HA restarts) |
 | `binary_sensor.<device>_weight_stable` | Binary Sensor | Indicates when the live weight measurement has stabilized during an active weigh-in (`off` when idle or disconnected) |
 | `binary_sensor.<device>_connected` | Binary Sensor | Diagnostic sensor indicating an active authenticated BLE connection |
+| `event.<device>_measurement` | Event | Fired on each completed weigh-in (`measurement_completed`) with `weight_kg`, `impedance_ohm`, `impedance_low_ohm`, and `profile_id` attributes |
 
 > [!TIP]
-> **Triggering Automations**: Because `sensor.<device>_weight` does not have extra state attributes, two consecutive weigh-ins with the exact same weight will not fire a state-changed event on the weight entity. Trigger automations on `sensor.<device>_last_measurement` instead, which updates on every completed measurement.
+> **Triggering Automations**: Because `sensor.<device>_weight` does not have extra state attributes, two consecutive weigh-ins with the exact same weight will not fire a state-changed event on the weight entity. Trigger automations on `event.<device>_measurement` (which carries all measurement values and `profile_id` in a single atomic event) or `sensor.<device>_last_measurement` instead.
 
 ---
 

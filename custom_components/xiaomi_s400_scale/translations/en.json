@@ -87,6 +87,18 @@
       "connected": {
         "name": "Connected"
       }
+    },
+    "event": {
+      "measurement": {
+        "name": "Measurement",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "measurement_completed": "Measurement completed"
+            }
+          }
+        }
+      }
     }
   }
 }
