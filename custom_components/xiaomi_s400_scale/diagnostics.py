@@ -60,7 +60,7 @@ async def async_get_config_entry_diagnostics(
         "entry": async_redact_data(entry.as_dict(), TO_REDACT),
         "state": asdict(coordinator.state),
         "auth_failed": coordinator.auth_failed,
-        "connecting": coordinator.connecting,
+        "session_active": coordinator.session_active,
         "consecutive_failures": coordinator.consecutive_failures,
         "cooldown_remaining": round(coordinator.cooldown_remaining, 1),
         "last_error": last_error,

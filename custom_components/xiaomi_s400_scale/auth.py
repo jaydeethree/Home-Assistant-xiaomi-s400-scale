@@ -93,7 +93,7 @@ async def _write_parcel(
     uuid: str,
     data: bytes,
     chunk_size: int = 18,
-    frame_delay: float = 0.02,
+    frame_delay: float = 0.05,
 ) -> None:
     for i in range(0, len(data), chunk_size):
         chunk = data[i : i + chunk_size]
@@ -101,8 +101,7 @@ async def _write_parcel(
         framed = bytes([n & 0xFF, (n >> 8) & 0xFF]) + chunk
         _LOGGER.debug("-> %s parcel frame %d (%dB)", uuid[:8], n, len(chunk))
         await client.write_gatt_char(uuid, framed, response=False)
-        if i + chunk_size < len(data):
-            await asyncio.sleep(frame_delay)
+        await asyncio.sleep(frame_delay)
 
 
 async def _recv_multiframe(

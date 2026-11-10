@@ -29,6 +29,7 @@ from homeassistant.util import dt as dt_util
 from .auth import AuthError, BadTokenError, NotifyHub, login
 from .const import (
     FAILURE_RESET_SECONDS,
+    IDLE_WATCHDOG_SECONDS,
     LIVE_WEIGHT_RESET_SECONDS,
     MAX_RECONNECT_COOLDOWN_SECONDS,
     RECENT_ADVERTISEMENT_SECONDS,
@@ -52,6 +53,7 @@ _LOGGER = logging.getLogger(__name__)
 type S400ConfigEntry = ConfigEntry[S400Coordinator]
 
 MAX_CONSECUTIVE_BAD_TOKENS = 3
+MAX_CONSECUTIVE_DECRYPT_FAILURES = 5
 WARN_AFTER_CONSECUTIVE_FAILURES = 3
 REQUIRED_NOTIFY_UUIDS = (UPNP, AVDTP, CMTP)
 
@@ -93,6 +95,7 @@ class S400Coordinator:
         self._stopping = False
         self._auth_failed = False
         self._consecutive_bad_tokens = 0
+        self._consecutive_decrypt_failures = 0
         self._consecutive_failures = 0
         self._warned_failure_streak = False
         self._last_failure_mono: float = 0.0
@@ -106,7 +109,7 @@ class S400Coordinator:
         return self._auth_failed
 
     @property
-    def connecting(self) -> bool:
+    def session_active(self) -> bool:
         """Return True if a BLE session task is currently active."""
         return self._active_task is not None and not self._active_task.done()
 
@@ -163,27 +166,27 @@ class S400Coordinator:
         self._stopping = False
 
         @callback
-        def _schedule_scanner_check(_hass: HomeAssistant) -> None:
+        def _on_started(_hass: HomeAssistant) -> None:
             self._cancel_scanner_check = async_call_later(
                 self.hass,
                 STARTUP_SCANNER_CHECK_DELAY_SECONDS,
                 self._async_check_connectable_scanners,
             )
+            if (
+                service_info := bluetooth.async_last_service_info(
+                    self.hass, self.address, connectable=True
+                )
+            ) is not None:
+                self._async_on_advertisement(service_info)
 
-        unsub_started = async_at_started(self.hass, _schedule_scanner_check)
-        if self._cancel_scanner_check is None:
-            self._cancel_scanner_check = unsub_started
         self._unsub_bluetooth = bluetooth.async_register_advertisement_callback(
             self.hass,
             self._async_on_advertisement,
             self.address,
         )
-        if (
-            service_info := bluetooth.async_last_service_info(
-                self.hass, self.address, connectable=True
-            )
-        ) is not None:
-            self._async_on_advertisement(service_info)
+        unsub_started = async_at_started(self.hass, _on_started)
+        if self._cancel_scanner_check is None:
+            self._cancel_scanner_check = unsub_started
 
     @callback
     def _async_check_connectable_scanners(self, _now: datetime) -> None:
@@ -227,7 +230,7 @@ class S400Coordinator:
         service_info: bluetooth.BluetoothServiceInfoBleak,
     ) -> None:
         """Process an incoming advertisement and connect if not already connected."""
-        if self._stopping or self._auth_failed or self.connecting:
+        if self._stopping or self._auth_failed or self.session_active:
             return
 
         if (time.monotonic() - service_info.time) > RECENT_ADVERTISEMENT_SECONDS:
@@ -270,7 +273,7 @@ class S400Coordinator:
 
     @callback
     def _schedule_connect(self, ble_device: BLEDevice) -> None:
-        if self.connecting:
+        if self.session_active:
             return
         if self._cancel_cooldown_retry is not None:
             self._cancel_cooldown_retry()
@@ -320,6 +323,7 @@ class S400Coordinator:
 
         client: BleakClientWithServiceCache | None = None
         authenticated = False
+        self._consecutive_decrypt_failures = 0
         try:
             _LOGGER.debug("Connecting to Xiaomi S400 Scale (%s)...", self.address)
             client = await establish_connection(
@@ -401,8 +405,7 @@ class S400Coordinator:
             else:
                 self._record_failure(f"connection error: {exc}")
         except Exception as exc:
-            if not authenticated:
-                self._record_failure(f"unexpected error: {exc}")
+            self._record_failure(f"unexpected error: {exc}")
             _LOGGER.exception("Unexpected error in BLE session on %s", self.address)
         finally:
             if client is not None and client.is_connected:
@@ -410,7 +413,9 @@ class S400Coordinator:
                     await client.disconnect()
                 except (BleakError, TimeoutError, EOFError, OSError) as exc:
                     _LOGGER.debug("Disconnect cleanup error on %s: %s", self.address, exc)
-            if authenticated:
+            if self._active_task is asyncio.current_task():
+                self._active_task = None
+            if authenticated and self._consecutive_failures == 0:
                 cooldown = RECONNECT_COOLDOWN_SECONDS
             else:
                 cooldown = min(
@@ -450,23 +455,33 @@ class S400Coordinator:
         q = hub.queue(CMTP)
         reassembler = ParcelReassembler()
         while True:
+            has_live_state = (
+                self.state.live_weight_kg is not None or self.state.stable
+            )
             timeout = (
                 LIVE_WEIGHT_RESET_SECONDS
-                if (self.state.live_weight_kg is not None or self.state.stable)
-                else None
+                if has_live_state
+                else IDLE_WATCHDOG_SECONDS
             )
             try:
                 async with asyncio.timeout(timeout):
                     data = await q.get()
             except TimeoutError:
-                _LOGGER.debug(
-                    "No CMTP frames for %ss on %s; clearing live weight state",
-                    timeout,
-                    self.address,
-                )
-                self.state.live_weight_kg = None
-                self.state.stable = False
-                self._async_notify_listeners()
+                if not client.is_connected:
+                    _LOGGER.debug(
+                        "BLE link no longer connected on %s; ending session",
+                        self.address,
+                    )
+                    return
+                if has_live_state:
+                    _LOGGER.debug(
+                        "No CMTP frames for %ss on %s; clearing live weight state",
+                        timeout,
+                        self.address,
+                    )
+                    self.state.live_weight_kg = None
+                    self.state.stable = False
+                    self._async_notify_listeners()
                 continue
             if data is None:
                 _LOGGER.debug("BLE link disconnected on %s", self.address)
@@ -479,7 +494,14 @@ class S400Coordinator:
                 await client.write_gatt_char(CMTP, RCV_OK, response=False)
                 continue
             if msg:
-                await self._handle_full_frame(keys, msg)
+                try:
+                    await self._handle_full_frame(keys, msg)
+                except AuthError:
+                    raise
+                except Exception:
+                    _LOGGER.exception(
+                        "Unexpected error handling CMTP frame on %s", self.address
+                    )
             if ack is not None:
                 await client.write_gatt_char(CMTP, ack, response=False)
 
@@ -487,27 +509,36 @@ class S400Coordinator:
         """Decrypt and process a reassembled CMTP payload."""
         pt = decrypt_cmtp(keys, ciphertext)
         if pt is None:
-            _LOGGER.debug("CMTP decrypt failed on %s: %s", self.address, ciphertext.hex())
+            self._consecutive_decrypt_failures += 1
+            _LOGGER.debug(
+                "CMTP decrypt failed on %s (%d/%d): %s",
+                self.address,
+                self._consecutive_decrypt_failures,
+                MAX_CONSECUTIVE_DECRYPT_FAILURES,
+                ciphertext.hex(),
+            )
+            if self._consecutive_decrypt_failures >= MAX_CONSECUTIVE_DECRYPT_FAILURES:
+                raise AuthError(
+                    f"CMTP decryption failed {self._consecutive_decrypt_failures} times in a row; re-establishing session"
+                )
             return
+        self._consecutive_decrypt_failures = 0
+
         event = parse_cmtp_payload(pt)
         if event is None:
             _LOGGER.debug("Unparsed CMTP payload on %s: %s", self.address, pt.hex())
             return
 
         if event.type == "live":
-            prev_active = (
-                self.state.live_weight_kg is not None and self.state.live_weight_kg > 0
-            )
+            prev_active = self.state.live_weight_kg is not None
             prev_stable = self.state.stable
-            self.state.live_weight_kg = event.weight_kg
-            self.state.stable = (
-                event.stable
-                if (event.weight_kg is not None and event.weight_kg > 0)
-                else False
-            )
-            now_active = (
-                self.state.live_weight_kg is not None and self.state.live_weight_kg > 0
-            )
+            if event.weight_kg is None or event.weight_kg <= 0:
+                self.state.live_weight_kg = None
+                self.state.stable = False
+            else:
+                self.state.live_weight_kg = event.weight_kg
+                self.state.stable = event.stable
+            now_active = self.state.live_weight_kg is not None
             if now_active != prev_active or self.state.stable != prev_stable:
                 _LOGGER.debug(
                     "Live measurement on %s: weight=%s kg, stable=%s",
