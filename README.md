@@ -13,26 +13,25 @@ Unlike passive BLE advertisement scanning (which only emits a final reading seve
 
 - **Token-Based Authentication Only**: This integration **only** supports manual token-based authentication. Automatic cloud login and cloud credential fetching are not supported. You must extract your scale's 12-byte (24-hex-character) BLE login token using [Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor).
 - **Body Composition Removed**: On-device body composition calculations (BMI, body fat %, muscle mass, water, visceral fat, etc.) have been completely removed from this integration to keep it focused and lightweight. If you want body composition calculations in Home Assistant from your weight and impedance values, consider using the [BodyMiscale](https://github.com/dckiller51/bodymiscale) custom integration.
-- **Coexistence with Built-in `xiaomi_ble`**: Home Assistant's built-in Xiaomi BLE (`xiaomi_ble`) integration may also discover the S400. Both integrations can be installed simultaneously (Home Assistant will attach both integrations' entities to the same device entry in the Device Registry via the shared Bluetooth MAC address), though while this integration holds an active GATT connection during a weigh-in, the scale may not broadcast the passive BLE advertisements that `xiaomi_ble` listens for.
+- **Bluetooth & AI Assistance**: While I have experience writing and maintaining Home Assistant integrations, I have no prior experience with Bluetooth/BLE development and have relied heavily on AI to help implement and refine the Bluetooth side of this integration.
+- **Coexistence with Built-in `xiaomi_ble`**: Home Assistant's built-in Xiaomi BLE (`xiaomi_ble`) integration may also discover the scale. Both integrations can be installed simultaneously (Home Assistant will attach both integrations' entities to the same device entry in the Device Registry via the shared Bluetooth MAC address), though while this integration holds an active GATT connection during a weigh-in, the scale may not broadcast the passive BLE advertisements that `xiaomi_ble` listens for.
 - **ESPHome Bluetooth Proxies**: Active GATT connections through ESPHome Bluetooth proxies are supported. Note that ESPHome proxies typically support up to 3 simultaneous active connections; this integration disconnects immediately after receiving the final measurement to free up proxy slots.
-- **Mi Home App Contention**: Because the scale only accepts one active BLE GATT connection at a time, the Mi Home mobile app cannot connect to the scale while Home Assistant is actively streaming a weigh-in.
-- **Early Development**: This project is still in early development and not intended for production environments.
+- **Mi Home App Contention**: Because the scale only accepts one active BLE GATT connection at a time, the Mi Home mobile app and Home Assistant cannot be connected to the scale at the same time.
 
 ---
 
 ## Features
 
-- **Live weight stream** — updates every ~0.3s while standing on the scale
-- **Weight Stable indicator** — binary sensor indicating when the measurement has stabilized/settled
-- **Final weight reading** — locked reading retained and restored across Home Assistant restarts
-- **Impedance sensors** — bio-electrical impedance and low-frequency impedance readings from the dual-frequency sensors
-- **Re-authentication & Reconfiguration** — easily update the BLE login token if the scale is re-paired in the Mi Home app
+- **Live weight stream** - updates every ~0.3s while standing on the scale
+- **Weight Stable indicator** - binary sensor indicating when the measurement has stabilized/settled
+- **Final weight reading** - locked reading retained and restored across Home Assistant restarts
+- **Impedance sensors** - high and low impedance readings from the dual-frequency sensors
 
 ---
 
 ## Getting Your BLE Login Token
 
-Because the scale requires Mi Home v2 cryptographic authentication before it will stream data:
+Because the scale requires authentication before it will stream data:
 
 1. Use [Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor) to log in to your Xiaomi account.
 2. Locate your S400 scale in the extracted output.
@@ -79,8 +78,8 @@ If the scale is factory reset or re-paired in the Mi Home app, the BLE token rot
 | --- | --- | --- |
 | `sensor.<device>_live_weight` | Sensor (`kg`) | Real-time weight stream updating every ~0.3s while on the scale (`unknown` when disconnected) |
 | `sensor.<device>_weight` | Sensor (`kg`) | Final locked weight measurement (restored across HA restarts) |
-| `sensor.<device>_impedance` | Sensor (`Ω`) | Bio-electrical impedance measurement (`unknown` when weighed with shoes/socks) |
-| `sensor.<device>_low_frequency_impedance` | Sensor (`Ω`) | Low-frequency bio-electrical impedance measurement (`unknown` when weighed with shoes/socks) |
+| `sensor.<device>_impedance` | Sensor (`Ω`) | High-frequency impedance measurement (`unknown` when weighed with shoes/socks) |
+| `sensor.<device>_low_frequency_impedance` | Sensor (`Ω`) | Low-frequency impedance measurement (`unknown` when weighed with shoes/socks) |
 | `sensor.<device>_last_measurement` | Sensor (`timestamp`) | Timestamp of the last completed measurement (restored across HA restarts) |
 | `binary_sensor.<device>_weight_stable` | Binary Sensor | Indicates when the live weight measurement has stabilized during an active session (`off` when disconnected) |
 | `binary_sensor.<device>_connected` | Binary Sensor | Diagnostic sensor indicating an active authenticated BLE connection |
