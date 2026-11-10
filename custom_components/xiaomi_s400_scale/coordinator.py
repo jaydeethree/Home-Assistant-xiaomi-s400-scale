@@ -314,11 +314,16 @@ class S400Coordinator:
         if service_info.connectable:
             ble_device = self._async_get_ble_device(service_info.device)
         else:
-            ble_device = bluetooth.async_ble_device_from_address(
+            connectable_info = bluetooth.async_last_service_info(
                 self.hass, self.address, connectable=True
             )
-            if ble_device is None:
+            if (
+                connectable_info is None
+                or (bluetooth.MONOTONIC_TIME() - connectable_info.time)
+                > RECENT_ADVERTISEMENT_SECONDS
+            ):
                 return
+            ble_device = self._async_get_ble_device(connectable_info.device)
 
         remaining = self.cooldown_remaining
         if remaining > 0:
