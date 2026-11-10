@@ -55,6 +55,7 @@ type S400ConfigEntry = ConfigEntry[S400Coordinator]
 MAX_CONSECUTIVE_BAD_TOKENS = 3
 MAX_CONSECUTIVE_DECRYPT_FAILURES = 5
 WARN_AFTER_CONSECUTIVE_FAILURES = 3
+DISCONNECTED_ADV_POLL_SECONDS = 5.0
 REQUIRED_NOTIFY_UUIDS = (UPNP, AVDTP, CMTP)
 
 
@@ -203,29 +204,23 @@ class S400Coordinator:
                 )
             ) is not None:
                 self._async_on_advertisement(service_info)
+            self._async_ensure_reconnect_timer()
 
-        if hasattr(bluetooth, "async_register_advertisement_callback"):
-            self._unsub_bluetooth = bluetooth.async_register_advertisement_callback(
-                self.hass,
-                self._async_on_advertisement,
-                self.address,
-            )
-        else:
-            @callback
-            def _on_bluetooth_event(
-                service_info: bluetooth.BluetoothServiceInfoBleak,
-                _change: bluetooth.BluetoothChange,
-            ) -> None:
-                self._async_on_advertisement(service_info)
+        @callback
+        def _on_bluetooth_event(
+            service_info: bluetooth.BluetoothServiceInfoBleak,
+            _change: bluetooth.BluetoothChange,
+        ) -> None:
+            self._async_on_advertisement(service_info)
 
-            self._unsub_bluetooth = bluetooth.async_register_callback(
-                self.hass,
-                _on_bluetooth_event,
-                bluetooth.BluetoothCallbackMatcher(
-                    address=self.address, connectable=True
-                ),
-                bluetooth.BluetoothScanningMode.PASSIVE,
-            )
+        self._unsub_bluetooth = bluetooth.async_register_callback(
+            self.hass,
+            _on_bluetooth_event,
+            bluetooth.BluetoothCallbackMatcher(
+                address=self.address, connectable=True
+            ),
+            bluetooth.BluetoothScanningMode.PASSIVE,
+        )
         unsub_started = async_at_started(self.hass, _on_started)
         if self._cancel_scanner_check is None:
             self._cancel_scanner_check = unsub_started
@@ -303,8 +298,23 @@ class S400Coordinator:
         self._schedule_connect(ble_device)
 
     @callback
+    def _async_ensure_reconnect_timer(self) -> None:
+        """Keep re-checking cached advertisements while disconnected in case payloads do not change."""
+        if (
+            self._stopping
+            or self._auth_failed
+            or self.session_active
+            or self._cancel_cooldown_retry is not None
+        ):
+            return
+        delay = max(self.cooldown_remaining, DISCONNECTED_ADV_POLL_SECONDS)
+        self._cancel_cooldown_retry = async_call_later(
+            self.hass, delay, self._async_cooldown_expired
+        )
+
+    @callback
     def _async_cooldown_expired(self, _now: datetime) -> None:
-        """Reconnect after cooldown if the scale was seen recently."""
+        """Reconnect after cooldown if the scale was seen recently, or re-arm while idle."""
         self._cancel_cooldown_retry = None
         if (
             service_info := bluetooth.async_last_service_info(
@@ -312,6 +322,7 @@ class S400Coordinator:
             )
         ) is not None:
             self._async_on_advertisement(service_info)
+        self._async_ensure_reconnect_timer()
 
     @callback
     def _schedule_connect(self, ble_device: BLEDevice) -> None:
