@@ -743,5 +743,5 @@ class S400Coordinator:
                 event.device_timestamp,
             )
 
-            self._async_notify_measurement_listeners()
             self._async_notify_listeners()
+            self._async_notify_measurement_listeners()
