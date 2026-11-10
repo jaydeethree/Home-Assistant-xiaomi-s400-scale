@@ -128,7 +128,7 @@ def parse_cmtp_payload(pt: bytes) -> ScaleEvent | None:
         if parts[1] not in ("0", "1"):
             return None
         w = _i(parts[0])
-        if w is None or not (0 < w <= MAX_WEIGHT_KG * 10):
+        if w is None or not (0 <= w <= MAX_WEIGHT_KG * 10):
             return None
         return ScaleEvent(
             type="live",

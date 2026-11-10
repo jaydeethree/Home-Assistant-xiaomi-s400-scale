@@ -82,7 +82,7 @@ If the scale is factory reset or re-paired in the Mi Home app, the BLE token rot
 | `sensor.<device>_impedance` | Sensor (`Ω`) | Bio-electrical impedance measurement (`unknown` when weighed with shoes/socks) |
 | `sensor.<device>_low_frequency_impedance` | Sensor (`Ω`) | Low-frequency bio-electrical impedance measurement (`unknown` when weighed with shoes/socks) |
 | `sensor.<device>_last_measurement` | Sensor (`timestamp`) | Timestamp of the last completed measurement (restored across HA restarts) |
-| `binary_sensor.<device>_weight_stable` | Binary Sensor | Indicates when the live weight measurement has stabilized |
+| `binary_sensor.<device>_weight_stable` | Binary Sensor | Indicates when the live weight measurement has stabilized during an active session (`off` when disconnected) |
 | `binary_sensor.<device>_connected` | Binary Sensor | Diagnostic sensor indicating an active authenticated BLE connection |
 
 > [!TIP]
