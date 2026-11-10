@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import re
-import time
 from typing import Any
 
 from homeassistant.components import bluetooth
@@ -57,7 +56,7 @@ async def async_get_config_entry_diagnostics(
             "rssi": service_info.rssi,
             "source": _redact_macs(service_info.source),
             "seconds_since_last_advertisement": round(
-                max(0.0, time.monotonic() - service_info.time), 1
+                max(0.0, bluetooth.MONOTONIC_TIME() - service_info.time), 1
             ),
             "mibeacon_product_id": product_id,
             "mibeacon_frame_counter": frame_counter,
