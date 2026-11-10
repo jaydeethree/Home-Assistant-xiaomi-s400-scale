@@ -46,7 +46,7 @@ class FrameSequenceError(ValueError):
     """Raised when a multi-frame message receives an out-of-sequence frame."""
 
 
-class CmtpReassembler:
+class ParcelReassembler:
     """Stateful reassembler for Mi Home 2-byte-framed BLE parcels (AVDTP & CMTP)."""
 
     def __init__(self) -> None:

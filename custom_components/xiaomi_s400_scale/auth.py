@@ -22,8 +22,8 @@ from .protocol import (
     RCV_OK,
     RCV_RDY,
     UPNP,
-    CmtpReassembler,
     FrameSequenceError,
+    ParcelReassembler,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -107,7 +107,7 @@ async def _write_parcel(
 async def _recv_multiframe(
     client: BleakClient, q: asyncio.Queue[bytes | None], timeout: float = 5.0
 ) -> bytes:
-    reassembler = CmtpReassembler()
+    reassembler = ParcelReassembler()
     first = await _wait(q, timeout, "multiframe header")
     if len(first) < 6 or first[:3] != b"\x00\x00\x00":
         raise AuthError(f"unexpected first frame: {first.hex()}")

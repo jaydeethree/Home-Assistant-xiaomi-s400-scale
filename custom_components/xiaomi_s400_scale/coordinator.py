@@ -47,8 +47,8 @@ from .protocol import (
     UPNP,
     VEND1A,
     VEND1C,
-    CmtpReassembler,
     FrameSequenceError,
+    ParcelReassembler,
     parse_cmtp_payload,
 )
 
@@ -57,6 +57,7 @@ _LOGGER = logging.getLogger(__name__)
 type S400ConfigEntry = ConfigEntry[S400Coordinator]
 
 MAX_CONSECUTIVE_BAD_TOKENS = 3
+MAX_CONSECUTIVE_IDLE_SESSIONS = 2
 WARN_AFTER_CONSECUTIVE_FAILURES = 3
 REQUIRED_NOTIFY_UUIDS = (UPNP, AVDTP, CMTP)
 OPTIONAL_NOTIFY_UUIDS = (AVCTP, VEND1A, VEND1C)
@@ -103,10 +104,12 @@ class S400Coordinator:
         self._auth_failed = False
         self._consecutive_bad_tokens = 0
         self._consecutive_failures = 0
+        self._consecutive_idle_sessions = 0
+        self._session_received_frame = False
+        self._session_received_final = False
         self._last_error: str | None = None
         self._last_connect_time: datetime | None = None
         self._cooldown_until_mono: float = 0.0
-        self._idle_session_cooldown = False
 
     @property
     def auth_failed(self) -> bool:
@@ -209,9 +212,12 @@ class S400Coordinator:
             return
         remaining = self.cooldown_remaining
         if remaining > 0:
-            # Schedule an expiry check unless we just finished an idle session that
-            # received zero frames (which avoids an endless idle reconnect loop).
-            if not self._idle_session_cooldown and self._cancel_cooldown_retry is None:
+            # Schedule an expiry check unless we have hit the consecutive idle-session
+            # cap (which prevents an endless idle reconnect loop).
+            if (
+                self._consecutive_idle_sessions < MAX_CONSECUTIVE_IDLE_SESSIONS
+                and self._cancel_cooldown_retry is None
+            ):
                 self._cancel_cooldown_retry = async_call_later(
                     self.hass, remaining, self._async_cooldown_expired
                 )
@@ -271,7 +277,8 @@ class S400Coordinator:
 
         client: BleakClientWithServiceCache | None = None
         authenticated = False
-        received_frames = False
+        self._session_received_frame = False
+        self._session_received_final = False
         try:
             _LOGGER.debug("Connecting to Xiaomi S400 Scale (%s)...", self.address)
             client = await establish_connection(
@@ -279,7 +286,7 @@ class S400Coordinator:
                 ble_device,
                 self.address,
                 disconnected_callback=_on_disconnect,
-                max_attempts=2,
+                max_attempts=3,
                 ble_device_callback=lambda: self._async_get_ble_device(ble_device),
             )
             try:
@@ -315,7 +322,7 @@ class S400Coordinator:
             self.state.connected = True
             self._async_notify_listeners()
 
-            received_frames = await self._cmtp_pump(client, keys, hub)
+            await self._cmtp_pump(client, keys, hub)
 
         except BadTokenError as exc:
             self._consecutive_bad_tokens += 1
@@ -365,13 +372,25 @@ class S400Coordinator:
                 self._record_failure(f"unexpected error: {exc}")
             _LOGGER.exception("Unexpected error in BLE session on %s", self.address)
         finally:
-            self._idle_session_cooldown = authenticated and not received_frames
-            if authenticated:
-                cooldown = (
-                    POST_MEASUREMENT_COOLDOWN_SECONDS
-                    if received_frames
-                    else IDLE_SESSION_COOLDOWN_SECONDS
-                )
+            if self._session_received_final:
+                self._consecutive_idle_sessions = 0
+                cooldown = POST_MEASUREMENT_COOLDOWN_SECONDS
+            elif authenticated and self._session_received_frame:
+                # Session dropped mid-weigh-in before final frame: use short cooldown
+                # and schedule a retry so we reconnect while the user is still on the scale.
+                self._consecutive_idle_sessions = 0
+                cooldown = RECONNECT_COOLDOWN_SECONDS
+                if (
+                    not self._stopping
+                    and not self._auth_failed
+                    and self._cancel_cooldown_retry is None
+                ):
+                    self._cancel_cooldown_retry = async_call_later(
+                        self.hass, cooldown, self._async_cooldown_expired
+                    )
+            elif authenticated:
+                self._consecutive_idle_sessions += 1
+                cooldown = IDLE_SESSION_COOLDOWN_SECONDS
             else:
                 cooldown = min(
                     RECONNECT_COOLDOWN_SECONDS * (2**self._consecutive_failures),
@@ -398,18 +417,14 @@ class S400Coordinator:
         client: BleakClient,
         keys: SessionKeys,
         hub: NotifyHub,
-    ) -> bool:
-        """Drain CMTP notifications, reassemble multi-frame messages, decrypt, and update state.
-
-        Returns True if at least one CMTP frame was received during the session.
-        """
+    ) -> None:
+        """Drain CMTP notifications, reassemble multi-frame messages, decrypt, and update state."""
         q = hub.queue(CMTP)
-        reassembler = CmtpReassembler()
-        received_any_frame = False
+        reassembler = ParcelReassembler()
         while True:
             timeout = (
                 CMTP_IDLE_TIMEOUT_SECONDS
-                if received_any_frame
+                if self._session_received_frame
                 else CMTP_FIRST_FRAME_TIMEOUT_SECONDS
             )
             try:
@@ -421,10 +436,10 @@ class S400Coordinator:
                     timeout,
                     self.address,
                 )
-                return received_any_frame
+                return
             if data is None:
-                return received_any_frame
-            received_any_frame = True
+                return
+            self._session_received_frame = True
             try:
                 ack, msg = reassembler.feed(data)
             except FrameSequenceError as exc:
@@ -438,7 +453,8 @@ class S400Coordinator:
             if ack is not None:
                 await client.write_gatt_char(CMTP, ack, response=False)
             if final_received:
-                return True
+                self._session_received_final = True
+                return
 
     async def _handle_full_frame(self, keys: SessionKeys, ciphertext: bytes) -> bool:
         """Decrypt and process a reassembled CMTP payload. Returns True on valid final reading."""
