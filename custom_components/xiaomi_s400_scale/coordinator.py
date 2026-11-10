@@ -290,7 +290,7 @@ class S400Coordinator:
         if self._stopping or self._auth_failed or self.session_active:
             return
 
-        if (time.monotonic() - service_info.time) > RECENT_ADVERTISEMENT_SECONDS:
+        if (bluetooth.MONOTONIC_TIME() - service_info.time) > RECENT_ADVERTISEMENT_SECONDS:
             return
 
         if service_info.connectable:
