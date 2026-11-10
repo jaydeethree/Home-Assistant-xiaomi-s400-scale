@@ -36,7 +36,7 @@ AUTH_ERRORS = {
     bytes.fromhex("e3000000"),
 }
 
-MAX_WEIGHT_KG = 500.0
+MAX_WEIGHT_KG = 200.0
 
 
 class FrameSequenceError(ValueError):
