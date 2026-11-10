@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hmac
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
-from cryptography.hazmat.primitives.hmac import HMAC
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 
@@ -40,9 +40,7 @@ def derive_login_keys(token: bytes, app_rand: bytes, dev_rand: bytes) -> Session
 
 def hmac_sha256(key: bytes, data: bytes) -> bytes:
     """Compute HMAC-SHA256."""
-    h = HMAC(key, hashes.SHA256())
-    h.update(data)
-    return h.finalize()
+    return hmac.digest(key, data, "sha256")
 
 
 def decrypt_cmtp(keys: SessionKeys, raw: bytes) -> bytes | None:
