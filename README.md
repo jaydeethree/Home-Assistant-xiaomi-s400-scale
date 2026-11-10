@@ -59,12 +59,11 @@ Because the scale requires authentication before it will stream data:
 
 ## Configuration
 
-1. Step on the scale to wake it up and begin BLE advertising.
-2. In Home Assistant, go to **Settings** → **Devices & Services**.
+1. In Home Assistant, go to **Settings** → **Devices & Services**.
    - If auto-discovered via Bluetooth, click **Configure**.
    - Otherwise, click **Add Integration**, search for **Xiaomi S400 Scale**, and select your scale or enter its Bluetooth MAC address.
-3. Enter the 24-character hex **BLE Login Token**.
-4. Submit the form to complete the setup.
+2. Enter the 24-character hex **BLE Login Token**.
+3. Submit the form to complete the setup.
 
 ### Token Updates / Re-authentication
 
