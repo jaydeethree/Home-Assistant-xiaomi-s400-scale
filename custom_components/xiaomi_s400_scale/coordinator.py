@@ -31,6 +31,7 @@ from .const import (
     FAILURE_RESET_SECONDS,
     IDLE_WATCHDOG_SECONDS,
     LIVE_WEIGHT_RESET_SECONDS,
+    MAX_OUT_OF_SLOTS_COOLDOWN_SECONDS,
     MAX_RECONNECT_COOLDOWN_SECONDS,
     RECENT_ADVERTISEMENT_SECONDS,
     RECONNECT_COOLDOWN_SECONDS,
@@ -411,6 +412,7 @@ class S400Coordinator:
 
         client: BleakClientWithServiceCache | None = None
         authenticated = False
+        out_of_slots = False
         session_start_mono: float | None = None
         disconnect_reason = "remote_disconnect"
         self._consecutive_decrypt_failures = 0
@@ -499,6 +501,7 @@ class S400Coordinator:
             if authenticated:
                 _LOGGER.debug("BLE session ended on %s: %s", self.address, exc)
             else:
+                out_of_slots = True
                 self._record_failure(
                     f"all Bluetooth adapter/proxy connection slots are in use: {exc}"
                 )
@@ -532,9 +535,14 @@ class S400Coordinator:
             if authenticated and self._consecutive_failures == 0:
                 cooldown = RECONNECT_COOLDOWN_SECONDS
             else:
+                max_cooldown = (
+                    MAX_OUT_OF_SLOTS_COOLDOWN_SECONDS
+                    if out_of_slots
+                    else MAX_RECONNECT_COOLDOWN_SECONDS
+                )
                 cooldown = min(
                     RECONNECT_COOLDOWN_SECONDS * (2**self._consecutive_failures),
-                    MAX_RECONNECT_COOLDOWN_SECONDS,
+                    max_cooldown,
                 )
             self._cooldown_until_mono = time.monotonic() + cooldown
             if (
