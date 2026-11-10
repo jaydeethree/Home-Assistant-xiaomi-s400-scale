@@ -46,6 +46,8 @@
       }
     },
     "error": {
+      "cannot_connect": "Failed to connect to the scale. Make sure the scale is in range of a connectable Bluetooth adapter or proxy.",
+      "invalid_auth": "Invalid BLE login token. Make sure you entered the 24-character BLE login token.",
       "invalid_mac": "Invalid Bluetooth MAC address (expected AA:BB:CC:DD:EE:FF).",
       "invalid_token": "Token must be exactly 24 hexadecimal characters (12 bytes)."
     },

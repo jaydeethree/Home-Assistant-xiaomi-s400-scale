@@ -2,17 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
+import logging
 import re
 from typing import Any
 
+from bleak import BleakClient
+from bleak.exc import BleakError
+from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 import voluptuous as vol
 
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
+    async_ble_device_from_address,
     async_discovered_service_info,
 )
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigEntryState,
+    ConfigFlow,
+    ConfigFlowResult,
+)
 from homeassistant.const import CONF_ADDRESS, CONF_TOKEN
 from homeassistant.helpers.device_registry import format_mac
 from homeassistant.helpers.selector import (
@@ -25,13 +36,17 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
-from .const import DOMAIN, S400_PRODUCT_IDS
-from .protocol import MIBEACON_SERVICE_UUID
+from .auth import AuthError, BadTokenError, NotifyHub, login
+from .const import DOMAIN, S400_PRODUCT_IDS, SETTLE_DELAY_SECONDS
+from .protocol import AVDTP, MIBEACON_SERVICE_UUID, UPNP
+
+_LOGGER = logging.getLogger(__name__)
 
 MAC_REGEX = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 HEX_24_REGEX = re.compile(r"^[0-9A-Fa-f]{24}$")
 
 TEXT_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
+AUTH_NOTIFY_UUIDS = (UPNP, AVDTP)
 
 
 def _clean_token(raw: str) -> str:
@@ -72,6 +87,59 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
         """Initialize the config flow."""
         self._discovery_info: BluetoothServiceInfoBleak | None = None
 
+    async def _async_validate_connection(self, address: str, token_hex: str) -> str | None:
+        """Connect to the scale and verify the Mi Home v2 BLE login token.
+
+        Returns None on success, or an error key ('cannot_connect' or 'invalid_auth').
+        """
+        ble_device = async_ble_device_from_address(
+            self.hass, address, connectable=True
+        )
+        if ble_device is None:
+            return "cannot_connect"
+
+        hub: NotifyHub | None = None
+
+        def _on_disconnect(_client: BleakClient) -> None:
+            if hub is not None:
+                hub.mark_disconnected()
+
+        client: BleakClientWithServiceCache | None = None
+        try:
+            client = await establish_connection(
+                BleakClientWithServiceCache,
+                ble_device,
+                address,
+                disconnected_callback=_on_disconnect,
+                max_attempts=3,
+                ble_device_callback=lambda: (
+                    async_ble_device_from_address(
+                        self.hass, address, connectable=True
+                    )
+                    or ble_device
+                ),
+            )
+            hub = NotifyHub()
+            if not client.is_connected:
+                hub.mark_disconnected()
+            for uuid in AUTH_NOTIFY_UUIDS:
+                await client.start_notify(uuid, hub.make_callback(uuid))
+            await asyncio.sleep(SETTLE_DELAY_SECONDS)
+            await login(client, bytes.fromhex(token_hex), hub)
+        except BadTokenError as exc:
+            _LOGGER.debug("BLE token validation failed on %s: %s", address, exc)
+            return "invalid_auth"
+        except (AuthError, BleakError, TimeoutError, EOFError, OSError) as exc:
+            _LOGGER.debug("BLE connection test failed on %s: %s", address, exc)
+            return "cannot_connect"
+        finally:
+            if client is not None and client.is_connected:
+                try:
+                    await client.disconnect()
+                except (BleakError, TimeoutError, EOFError, OSError):
+                    pass
+        return None
+
     async def async_step_bluetooth(
         self, discovery_info: BluetoothServiceInfoBleak
     ) -> ConfigFlowResult:
@@ -93,21 +161,25 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
         """Prompt for the 12-byte BLE login token after Bluetooth discovery."""
         assert self._discovery_info is not None
         errors: dict[str, str] = {}
+        address = self._discovery_info.address.upper()
 
         default_name = (
             self._discovery_info.name
-            or f"Xiaomi S400 Scale ({self._discovery_info.address[-5:]})"
+            or f"Xiaomi S400 Scale ({address[-5:]})"
         )
 
         if user_input is not None:
             if token := _validate_token(user_input[CONF_TOKEN], errors):
-                return self.async_create_entry(
-                    title=default_name,
-                    data={
-                        CONF_ADDRESS: self._discovery_info.address.upper(),
-                        CONF_TOKEN: token,
-                    },
-                )
+                if err := await self._async_validate_connection(address, token):
+                    errors[CONF_TOKEN if err == "invalid_auth" else "base"] = err
+                else:
+                    return self.async_create_entry(
+                        title=default_name,
+                        data={
+                            CONF_ADDRESS: address,
+                            CONF_TOKEN: token,
+                        },
+                    )
 
         schema = vol.Schema(
             {
@@ -118,7 +190,7 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="bluetooth_confirm",
             data_schema=self.add_suggested_values_to_schema(schema, user_input),
             description_placeholders={
-                "address": self._discovery_info.address.upper(),
+                "address": address,
                 "name": default_name,
             },
             errors=errors,
@@ -152,17 +224,20 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             if not errors and token is not None:
                 await self.async_set_unique_id(address, raise_on_progress=False)
                 self._abort_if_unique_id_configured()
-                title = (
-                    discovered_names.get(address)
-                    or f"Xiaomi S400 Scale ({address[-5:]})"
-                )
-                return self.async_create_entry(
-                    title=title,
-                    data={
-                        CONF_ADDRESS: address,
-                        CONF_TOKEN: token,
-                    },
-                )
+                if err := await self._async_validate_connection(address, token):
+                    errors[CONF_TOKEN if err == "invalid_auth" else "base"] = err
+                else:
+                    title = (
+                        discovered_names.get(address)
+                        or f"Xiaomi S400 Scale ({address[-5:]})"
+                    )
+                    return self.async_create_entry(
+                        title=title,
+                        data={
+                            CONF_ADDRESS: address,
+                            CONF_TOKEN: token,
+                        },
+                    )
 
         address_selector: Any = (
             SelectSelector(
@@ -197,13 +272,27 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Shared handler for updating the BLE login token (reauth and reconfigure)."""
         errors: dict[str, str] = {}
+        address = entry.data[CONF_ADDRESS]
 
         if user_input is not None:
             if token := _validate_token(user_input[CONF_TOKEN], errors):
-                return self.async_update_reload_and_abort(
-                    entry,
-                    data_updates={CONF_TOKEN: token},
+                coordinator = (
+                    entry.runtime_data
+                    if entry.state is ConfigEntryState.LOADED
+                    and hasattr(entry, "runtime_data")
+                    else None
                 )
+                if coordinator is not None:
+                    await coordinator.async_stop()
+                err = await self._async_validate_connection(address, token)
+                if err is None:
+                    return self.async_update_reload_and_abort(
+                        entry,
+                        data_updates={CONF_TOKEN: token},
+                    )
+                if coordinator is not None and not coordinator.auth_failed:
+                    coordinator.async_start()
+                errors[CONF_TOKEN if err == "invalid_auth" else "base"] = err
 
         schema = vol.Schema({vol.Required(CONF_TOKEN): TEXT_SELECTOR})
         suggested_values = (
@@ -215,7 +304,7 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id=step_id,
             data_schema=self.add_suggested_values_to_schema(schema, suggested_values),
             description_placeholders={
-                "address": entry.data[CONF_ADDRESS],
+                "address": address,
             },
             errors=errors,
         )
