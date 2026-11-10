@@ -31,7 +31,7 @@ from .protocol import MIBEACON_SERVICE_UUID
 MAC_REGEX = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 HEX_24_REGEX = re.compile(r"^[0-9A-Fa-f]{24}$")
 
-TOKEN_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
+TEXT_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
 
 
 def _clean_token(raw: str) -> str:
@@ -111,7 +111,7 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_TOKEN): TOKEN_SELECTOR,
+                vol.Required(CONF_TOKEN): TEXT_SELECTOR,
             }
         )
         return self.async_show_form(
@@ -173,13 +173,13 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
             )
             if options
-            else TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
+            else TEXT_SELECTOR
         )
 
         schema = vol.Schema(
             {
                 vol.Required(CONF_ADDRESS): address_selector,
-                vol.Required(CONF_TOKEN): TOKEN_SELECTOR,
+                vol.Required(CONF_TOKEN): TEXT_SELECTOR,
             }
         )
         return self.async_show_form(
@@ -205,7 +205,7 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                     data_updates={CONF_TOKEN: token},
                 )
 
-        schema = vol.Schema({vol.Required(CONF_TOKEN): TOKEN_SELECTOR})
+        schema = vol.Schema({vol.Required(CONF_TOKEN): TEXT_SELECTOR})
         suggested_values = (
             user_input
             if user_input is not None
