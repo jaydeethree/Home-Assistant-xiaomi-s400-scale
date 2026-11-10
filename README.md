@@ -17,6 +17,7 @@ Unlike passive BLE advertisement scanning (which only emits a final reading seve
 - **Coexistence with Built-in `xiaomi_ble`**: Home Assistant's built-in Xiaomi BLE (`xiaomi_ble`) integration may also discover the scale. Both integrations can be installed simultaneously (Home Assistant will attach both integrations' entities to the same device entry in the Device Registry via the shared Bluetooth MAC address), though because this integration maintains an active GATT connection to stream live readings, the scale may not broadcast the passive BLE measurement advertisements that `xiaomi_ble` listens for.
 - **ESPHome Bluetooth Proxies**: Active GATT connections through ESPHome Bluetooth proxies are supported. Because the scale does not change its BLE advertisements when stepped on until a measurement is already finished, this integration maintains a persistent connection to the scale, which uses 1 active connection slot on the proxy (ESPHome proxies typically support up to 3 simultaneous active connections).
 - **Mi Home App Contention**: Because the scale only accepts one active BLE GATT connection at a time, the Mi Home mobile app and Home Assistant cannot be connected to the scale at the same time.
+- **No Offline Measurement Sync**: The scale only streams live and final readings while an authenticated BLE session is active. Weigh-ins completed while Home Assistant or your Bluetooth adapter/proxy is offline or disconnected are not replayed when the connection is restored.
 
 ---
 
