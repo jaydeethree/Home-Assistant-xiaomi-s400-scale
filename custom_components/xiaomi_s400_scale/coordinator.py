@@ -29,7 +29,6 @@ from homeassistant.util import dt as dt_util
 from .auth import AuthError, BadTokenError, NotifyHub, login
 from .const import (
     FAILURE_RESET_SECONDS,
-    IDLE_WATCHDOG_SECONDS,
     LIVE_WEIGHT_RESET_SECONDS,
     MAX_RECONNECT_COOLDOWN_SECONDS,
     RECENT_ADVERTISEMENT_SECONDS,
@@ -484,11 +483,7 @@ class S400Coordinator:
             has_live_state = (
                 self.state.live_weight_kg is not None or self.state.stable
             )
-            timeout = (
-                LIVE_WEIGHT_RESET_SECONDS
-                if has_live_state
-                else IDLE_WATCHDOG_SECONDS
-            )
+            timeout = LIVE_WEIGHT_RESET_SECONDS if has_live_state else None
             try:
                 async with asyncio.timeout(timeout):
                     data = await q.get()
@@ -499,15 +494,14 @@ class S400Coordinator:
                         self.address,
                     )
                     return
-                if has_live_state:
-                    _LOGGER.debug(
-                        "No CMTP frames for %ss on %s; clearing live weight state",
-                        timeout,
-                        self.address,
-                    )
-                    self.state.live_weight_kg = None
-                    self.state.stable = False
-                    self._async_notify_listeners()
+                _LOGGER.debug(
+                    "No CMTP frames for %ss on %s; clearing live weight state",
+                    timeout,
+                    self.address,
+                )
+                self.state.live_weight_kg = None
+                self.state.stable = False
+                self._async_notify_listeners()
                 continue
             if data is None:
                 _LOGGER.debug("BLE link disconnected on %s", self.address)
@@ -521,7 +515,7 @@ class S400Coordinator:
                 continue
             if msg:
                 try:
-                    await self._handle_full_frame(keys, msg)
+                    self._handle_full_frame(keys, msg)
                 except AuthError:
                     raise
                 except Exception:
@@ -531,7 +525,8 @@ class S400Coordinator:
             if ack is not None:
                 await client.write_gatt_char(CMTP, ack, response=False)
 
-    async def _handle_full_frame(self, keys: SessionKeys, ciphertext: bytes) -> None:
+    @callback
+    def _handle_full_frame(self, keys: SessionKeys, ciphertext: bytes) -> None:
         """Decrypt and process a reassembled CMTP payload."""
         pt = decrypt_cmtp(keys, ciphertext)
         if pt is None:
