@@ -13,20 +13,25 @@ from homeassistant.components.bluetooth import (
     async_discovered_service_info,
 )
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
-from homeassistant.const import CONF_ADDRESS
+from homeassistant.const import CONF_ADDRESS, CONF_TOKEN
 from homeassistant.helpers.device_registry import format_mac
 from homeassistant.helpers.selector import (
     SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
 )
 
-from .const import CONF_TOKEN, DOMAIN, S400_PRODUCT_IDS
+from .const import DOMAIN, S400_PRODUCT_IDS
 from .protocol import MIBEACON_SERVICE_UUID
 
 MAC_REGEX = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 HEX_24_REGEX = re.compile(r"^[0-9A-Fa-f]{24}$")
+
+TOKEN_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
 
 
 def _clean_token(raw: str) -> str:
@@ -106,7 +111,7 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_TOKEN): str,
+                vol.Required(CONF_TOKEN): TOKEN_SELECTOR,
             }
         )
         return self.async_show_form(
@@ -168,13 +173,13 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
             )
             if options
-            else str
+            else TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
         )
 
         schema = vol.Schema(
             {
                 vol.Required(CONF_ADDRESS): address_selector,
-                vol.Required(CONF_TOKEN): str,
+                vol.Required(CONF_TOKEN): TOKEN_SELECTOR,
             }
         )
         return self.async_show_form(
@@ -200,7 +205,7 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                     data_updates={CONF_TOKEN: token},
                 )
 
-        schema = vol.Schema({vol.Required(CONF_TOKEN): str})
+        schema = vol.Schema({vol.Required(CONF_TOKEN): TOKEN_SELECTOR})
         suggested_values = (
             user_input
             if user_input is not None
