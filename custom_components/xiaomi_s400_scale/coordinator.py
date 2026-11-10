@@ -26,11 +26,12 @@ from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
 
-from .auth import AuthError, BadTokenError, DisconnectedError, NotifyHub, login
+from .auth import AuthError, BadTokenError, NotifyHub, login
 from .const import (
     ACTIVE_ADVERTISEMENT_SECONDS,
     CMTP_FIRST_FRAME_TIMEOUT_SECONDS,
     CMTP_IDLE_TIMEOUT_SECONDS,
+    FAILURE_RESET_SECONDS,
     IDLE_SESSION_COOLDOWN_SECONDS,
     MAX_RECONNECT_COOLDOWN_SECONDS,
     POST_MEASUREMENT_COOLDOWN_SECONDS,
@@ -43,6 +44,7 @@ from .protocol import (
     AVCTP,
     AVDTP,
     CMTP,
+    MIBEACON_SERVICE_UUID,
     RCV_OK,
     UPNP,
     VEND1A,
@@ -65,6 +67,16 @@ OPTIONAL_NOTIFY_UUIDS = (AVCTP, VEND1A, VEND1C)
 
 def _ignore_optional_notify(_handle: int, _data: bytearray) -> None:
     """No-op callback for optional characteristics whose notifications are unused."""
+
+
+def _extract_mibeacon_counter(
+    service_info: bluetooth.BluetoothServiceInfoBleak,
+) -> int | None:
+    """Extract the 1-byte MiBeacon frame counter from 0xFE95 service data, if present."""
+    mibeacon = service_info.service_data.get(MIBEACON_SERVICE_UUID)
+    if mibeacon is not None and len(mibeacon) >= 5:
+        return mibeacon[4]
+    return None
 
 
 @dataclass
@@ -104,7 +116,11 @@ class S400Coordinator:
         self._auth_failed = False
         self._consecutive_bad_tokens = 0
         self._consecutive_failures = 0
+        self._warned_failure_streak = False
+        self._last_failure_mono: float = 0.0
         self._consecutive_idle_sessions = 0
+        self._last_adv_mono: float = 0.0
+        self._last_mibeacon_counter: int | None = None
         self._session_received_frame = False
         self._session_received_final = False
         self._last_error: str | None = None
@@ -172,6 +188,12 @@ class S400Coordinator:
     def async_start(self) -> None:
         """Start listening for BLE advertisements from the scale."""
         self._stopping = False
+        if bluetooth.async_scanner_count(self.hass, connectable=True) == 0:
+            _LOGGER.warning(
+                "No connectable Bluetooth adapters or proxies are currently available for %s (%s)",
+                self.entry.title,
+                self.address,
+            )
         self._unsub_bluetooth = bluetooth.async_register_callback(
             self.hass,
             self._async_on_bluetooth_event,
@@ -206,18 +228,36 @@ class S400Coordinator:
         change: bluetooth.BluetoothChange,
     ) -> None:
         """Handle an advertisement from the scale."""
-        if self._stopping or self._auth_failed or self.connecting:
+        now_mono = time.monotonic()
+        if (now_mono - service_info.time) > RECENT_ADVERTISEMENT_SECONDS:
             return
-        if (time.monotonic() - service_info.time) > RECENT_ADVERTISEMENT_SECONDS:
+
+        counter = _extract_mibeacon_counter(service_info)
+        if (
+            self._last_adv_mono > 0
+            and (now_mono - self._last_adv_mono) > RECENT_ADVERTISEMENT_SECONDS
+        ) or (
+            counter is not None
+            and self._last_mibeacon_counter is not None
+            and counter != self._last_mibeacon_counter
+        ):
+            self._consecutive_idle_sessions = 0
+
+        self._last_adv_mono = now_mono
+        if counter is not None:
+            self._last_mibeacon_counter = counter
+
+        if (
+            self._stopping
+            or self._auth_failed
+            or self.connecting
+            or self._consecutive_idle_sessions >= MAX_CONSECUTIVE_IDLE_SESSIONS
+        ):
             return
+
         remaining = self.cooldown_remaining
         if remaining > 0:
-            # Schedule an expiry check unless we have hit the consecutive idle-session
-            # cap (which prevents an endless idle reconnect loop).
-            if (
-                self._consecutive_idle_sessions < MAX_CONSECUTIVE_IDLE_SESSIONS
-                and self._cancel_cooldown_retry is None
-            ):
+            if self._cancel_cooldown_retry is None:
                 self._cancel_cooldown_retry = async_call_later(
                     self.hass, remaining, self._async_cooldown_expired
                 )
@@ -228,7 +268,12 @@ class S400Coordinator:
     def _async_cooldown_expired(self, _now: datetime) -> None:
         """Connect after cooldown if the scale is actively advertising right now."""
         self._cancel_cooldown_retry = None
-        if self._stopping or self._auth_failed or self.connecting:
+        if (
+            self._stopping
+            or self._auth_failed
+            or self.connecting
+            or self._consecutive_idle_sessions >= MAX_CONSECUTIVE_IDLE_SESSIONS
+        ):
             return
         service_info = bluetooth.async_last_service_info(
             self.hass, self.address, connectable=True
@@ -253,15 +298,30 @@ class S400Coordinator:
             name=f"xiaomi_s400_scale_{self.address}",
         )
 
+    def _decay_failures_if_stale(self) -> None:
+        """Reset the failure streak if the last failure was more than FAILURE_RESET_SECONDS ago."""
+        now_mono = time.monotonic()
+        if (
+            self._last_failure_mono > 0
+            and (now_mono - self._last_failure_mono) > FAILURE_RESET_SECONDS
+        ):
+            self._consecutive_failures = 0
+            self._warned_failure_streak = False
+        self._last_failure_mono = now_mono
+
     def _record_failure(self, message: str) -> None:
         """Record a connection or handshake failure and log with rate limiting."""
+        self._decay_failures_if_stale()
         self._consecutive_failures += 1
         self._last_error = message
-        log_fn = (
-            _LOGGER.warning
-            if self._consecutive_failures == WARN_AFTER_CONSECUTIVE_FAILURES
-            else _LOGGER.debug
-        )
+        if (
+            self._consecutive_failures >= WARN_AFTER_CONSECUTIVE_FAILURES
+            and not self._warned_failure_streak
+        ):
+            self._warned_failure_streak = True
+            log_fn = _LOGGER.warning
+        else:
+            log_fn = _LOGGER.debug
         log_fn(
             "BLE session failed on %s (attempt %d): %s",
             self.address,
@@ -284,7 +344,7 @@ class S400Coordinator:
             client = await establish_connection(
                 BleakClientWithServiceCache,
                 ble_device,
-                self.address,
+                self.entry.title,
                 disconnected_callback=_on_disconnect,
                 max_attempts=3,
                 ble_device_callback=lambda: self._async_get_ble_device(ble_device),
@@ -306,7 +366,7 @@ class S400Coordinator:
             await asyncio.sleep(SETTLE_DELAY_SECONDS)
             keys = await login(client, self.token, hub)
             authenticated = True
-            if self._consecutive_failures >= WARN_AFTER_CONSECUTIVE_FAILURES:
+            if self._warned_failure_streak:
                 _LOGGER.info(
                     "Connection to Xiaomi S400 Scale (%s) restored after %d failed attempts",
                     self.address,
@@ -317,6 +377,8 @@ class S400Coordinator:
 
             self._consecutive_bad_tokens = 0
             self._consecutive_failures = 0
+            self._warned_failure_streak = False
+            self._last_failure_mono = 0.0
             self._last_error = None
             self._last_connect_time = dt_util.utcnow()
             self.state.connected = True
@@ -325,6 +387,7 @@ class S400Coordinator:
             await self._cmtp_pump(client, keys, hub)
 
         except BadTokenError as exc:
+            self._decay_failures_if_stale()
             self._consecutive_bad_tokens += 1
             self._consecutive_failures += 1
             self._last_error = str(exc)
@@ -346,11 +409,6 @@ class S400Coordinator:
                     MAX_CONSECUTIVE_BAD_TOKENS,
                     exc,
                 )
-        except DisconnectedError as exc:
-            if authenticated:
-                _LOGGER.debug("BLE disconnected on %s: %s", self.address, exc)
-            else:
-                self._record_failure(str(exc))
         except AuthError as exc:
             self._record_failure(str(exc))
         except asyncio.CancelledError:
@@ -418,13 +476,19 @@ class S400Coordinator:
         keys: SessionKeys,
         hub: NotifyHub,
     ) -> None:
-        """Drain CMTP notifications, reassemble multi-frame messages, decrypt, and update state."""
+        """Drain CMTP notifications, reassemble multi-frame messages, decrypt, and update state.
+
+        Remains connected for up to CMTP_FIRST_FRAME_TIMEOUT_SECONDS after a final frame
+        so back-to-back weigh-ins stream over the same session and the scale powers down
+        cleanly before disconnecting.
+        """
         q = hub.queue(CMTP)
         reassembler = ParcelReassembler()
+        in_active_weigh_in = False
         while True:
             timeout = (
                 CMTP_IDLE_TIMEOUT_SECONDS
-                if self._session_received_frame
+                if in_active_weigh_in
                 else CMTP_FIRST_FRAME_TIMEOUT_SECONDS
             )
             try:
@@ -440,6 +504,7 @@ class S400Coordinator:
             if data is None:
                 return
             self._session_received_frame = True
+            in_active_weigh_in = True
             try:
                 ack, msg = reassembler.feed(data)
             except FrameSequenceError as exc:
@@ -454,7 +519,7 @@ class S400Coordinator:
                 await client.write_gatt_char(CMTP, ack, response=False)
             if final_received:
                 self._session_received_final = True
-                return
+                in_active_weigh_in = False
 
     async def _handle_full_frame(self, keys: SessionKeys, ciphertext: bytes) -> bool:
         """Decrypt and process a reassembled CMTP payload. Returns True on valid final reading."""
