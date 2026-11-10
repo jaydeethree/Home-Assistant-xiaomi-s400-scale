@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from homeassistant.const import CONF_ADDRESS, CONF_TOKEN, Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.const import (
+    CONF_ADDRESS,
+    CONF_TOKEN,
+    EVENT_HOMEASSISTANT_STOP,
+    Platform,
+)
+from homeassistant.core import Event, HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from .coordinator import S400ConfigEntry, S400Coordinator
@@ -30,6 +35,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: S400ConfigEntry) -> bool
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    async def _async_handle_stop(_event: Event) -> None:
+        await coordinator.async_stop()
+
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_handle_stop)
+    )
     coordinator.async_start()
 
     return True

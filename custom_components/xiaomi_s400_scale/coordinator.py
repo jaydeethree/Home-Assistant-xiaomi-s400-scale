@@ -305,7 +305,12 @@ class S400Coordinator:
         service_info: bluetooth.BluetoothServiceInfoBleak,
     ) -> None:
         """Process an incoming advertisement and connect if not already connected."""
-        if self._stopping or self._auth_failed or self.session_active:
+        if (
+            self._stopping
+            or self.hass.is_stopping
+            or self._auth_failed
+            or self.session_active
+        ):
             return
 
         if (bluetooth.MONOTONIC_TIME() - service_info.time) > RECENT_ADVERTISEMENT_SECONDS:
@@ -345,6 +350,7 @@ class S400Coordinator:
         """Keep re-checking cached advertisements while disconnected in case payloads do not change."""
         if (
             self._stopping
+            or self.hass.is_stopping
             or self._auth_failed
             or self.session_active
             or self._cancel_cooldown_retry is not None
@@ -502,7 +508,9 @@ class S400Coordinator:
             disconnect_reason = f"auth_error: {exc}"
             self._record_failure(str(exc))
         except asyncio.CancelledError:
-            disconnect_reason = "stopped" if self._stopping else "cancelled"
+            disconnect_reason = (
+                "stopped" if (self._stopping or self.hass.is_stopping) else "cancelled"
+            )
             raise
         except BleakOutOfConnectionSlotsError as exc:
             disconnect_reason = f"out_of_slots: {exc}"
@@ -555,6 +563,7 @@ class S400Coordinator:
             self._cooldown_until_mono = time.monotonic() + cooldown
             if (
                 not self._stopping
+                and not self.hass.is_stopping
                 and not self._auth_failed
                 and self._cancel_cooldown_retry is None
             ):
