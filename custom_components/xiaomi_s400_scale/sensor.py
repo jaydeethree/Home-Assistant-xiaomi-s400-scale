@@ -28,7 +28,7 @@ UNIT_OHM = "\u03a9"
 class S400SensorEntityDescription(SensorEntityDescription):
     """Describe a Xiaomi Scale S400 sensor entity."""
 
-    value_fn: Callable[[S400State], float | datetime | None]
+    value_fn: Callable[[S400State], float | int | datetime | None]
     restore_fn: Callable[[S400State, Any], None] | None = None
 
 
@@ -45,6 +45,11 @@ def _restore_impedance(state: S400State, value: Any) -> None:
 def _restore_impedance_low(state: S400State, value: Any) -> None:
     if state.impedance_low_ohm is None:
         state.impedance_low_ohm = float(value)
+
+
+def _restore_profile_id(state: S400State, value: Any) -> None:
+    if state.profile_id is None:
+        state.profile_id = int(float(value))
 
 
 def _restore_last_measurement(state: S400State, value: Any) -> None:
@@ -88,6 +93,12 @@ SENSORS: tuple[S400SensorEntityDescription, ...] = (
         suggested_display_precision=1,
         value_fn=lambda s: s.impedance_low_ohm,
         restore_fn=_restore_impedance_low,
+    ),
+    S400SensorEntityDescription(
+        key="profile_id",
+        translation_key="profile_id",
+        value_fn=lambda s: s.profile_id,
+        restore_fn=_restore_profile_id,
     ),
     S400SensorEntityDescription(
         key="last_measurement",
@@ -144,6 +155,6 @@ class S400SensorEntity(S400Entity, RestoreSensor):
         return super()._get_state_key()
 
     @property
-    def native_value(self) -> float | datetime | None:
+    def native_value(self) -> float | int | datetime | None:
         """Return the current sensor value."""
         return self.entity_description.value_fn(self.coordinator.state)

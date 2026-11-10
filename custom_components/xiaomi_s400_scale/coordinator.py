@@ -67,6 +67,7 @@ class S400State:
     stable: bool = False
     impedance_ohm: float | None = None
     impedance_low_ohm: float | None = None
+    profile_id: int | None = None
     last_measurement: datetime | None = None
 
 
@@ -635,13 +636,15 @@ class S400Coordinator:
                 if (event.impedance_low_ohm and event.impedance_low_ohm > 0)
                 else None
             )
+            self.state.profile_id = event.profile_id
             self.state.last_measurement = dt_util.utcnow()
             _LOGGER.debug(
-                "Final measurement on %s: weight=%s kg, impedance=%s ohm, impedance_low=%s ohm",
+                "Final measurement on %s: weight=%s kg, impedance=%s ohm, impedance_low=%s ohm, profile_id=%s",
                 self.address,
                 self.state.final_weight_kg,
                 self.state.impedance_ohm,
                 self.state.impedance_low_ohm,
+                self.state.profile_id,
             )
 
             self._async_notify_listeners()

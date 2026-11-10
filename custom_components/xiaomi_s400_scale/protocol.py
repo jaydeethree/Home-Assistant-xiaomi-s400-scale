@@ -100,6 +100,7 @@ class ScaleEvent:
     stable: bool = False
     impedance_ohm: float | None = None
     impedance_low_ohm: float | None = None
+    profile_id: int | None = None
 
 
 def parse_cmtp_payload(pt: bytes) -> ScaleEvent | None:
@@ -146,5 +147,6 @@ def parse_cmtp_payload(pt: bytes) -> ScaleEvent | None:
             stable=parts[4] == "1",
             impedance_ohm=imp / 10 if imp is not None else None,
             impedance_low_ohm=imp_low / 10 if imp_low is not None else None,
+            profile_id=_i(parts[2]),
         )
     return None
