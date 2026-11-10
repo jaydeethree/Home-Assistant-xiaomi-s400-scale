@@ -25,7 +25,7 @@ class S400Entity(Entity):
         """Initialize the entity."""
         self.coordinator = coordinator
         self.entity_description = description
-        self._last_state_key: tuple[bool, object] | None = None
+        self._last_state_key: tuple[object, ...] | None = None
         address = coordinator.address
 
         self._attr_unique_id = f"{address}_{description.key}"
@@ -43,13 +43,14 @@ class S400Entity(Entity):
         """Return False if authentication has halted pending reauth."""
         return not self.coordinator.auth_failed
 
+    def _get_state_key(self) -> tuple[object, ...]:
+        """Return a tuple identifying the entity state for deduplication."""
+        return (self.available, self.state)
+
     async def async_added_to_hass(self) -> None:
         """Subscribe to coordinator updates."""
         await super().async_added_to_hass()
-        self._last_state_key = (
-            self.available,
-            self.state,
-        )
+        self._last_state_key = self._get_state_key()
         self.async_on_remove(
             self.coordinator.async_add_listener(self._handle_coordinator_update)
         )
@@ -57,10 +58,7 @@ class S400Entity(Entity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        state_key = (
-            self.available,
-            self.state,
-        )
+        state_key = self._get_state_key()
         if state_key == self._last_state_key:
             return
         self._last_state_key = state_key

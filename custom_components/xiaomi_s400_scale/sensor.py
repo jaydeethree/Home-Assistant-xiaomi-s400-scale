@@ -133,6 +133,16 @@ class S400SensorEntity(S400Entity, RestoreSensor):
 
         await super().async_added_to_hass()
 
+    def _get_state_key(self) -> tuple[object, ...]:
+        """Include last_measurement on final sensors so identical repeat readings update last_reported."""
+        if self.entity_description.restore_fn is not None:
+            return (
+                self.available,
+                self.state,
+                self.coordinator.state.last_measurement,
+            )
+        return super()._get_state_key()
+
     @property
     def native_value(self) -> float | datetime | None:
         """Return the current sensor value."""
