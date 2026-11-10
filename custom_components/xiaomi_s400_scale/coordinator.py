@@ -24,6 +24,7 @@ from homeassistant.components.bluetooth.match import BluetoothCallbackMatcher
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
 
 from .auth import AuthError, BadTokenError, NotifyHub, login
@@ -39,6 +40,7 @@ from .const import (
     RECENT_ADVERTISEMENT_SECONDS,
     RECONNECT_COOLDOWN_SECONDS,
     SETTLE_DELAY_SECONDS,
+    STARTUP_SCANNER_CHECK_DELAY_SECONDS,
 )
 from .crypto import SessionKeys, decrypt_cmtp
 from .protocol import (
@@ -113,6 +115,7 @@ class S400Coordinator:
         self._active_task: asyncio.Task[None] | None = None
         self._unsub_bluetooth: CALLBACK_TYPE | None = None
         self._cancel_cooldown_retry: CALLBACK_TYPE | None = None
+        self._cancel_scanner_check: CALLBACK_TYPE | None = None
         self._stopping = False
         self._auth_failed = False
         self._consecutive_bad_tokens = 0
@@ -122,9 +125,9 @@ class S400Coordinator:
         self._consecutive_idle_sessions = 0
         self._last_changed_adv_mono: float = 0.0
         self._last_mibeacon_counter: int | None = None
-        self._session_received_frame = False
         self._session_received_final = False
         self._weigh_in_in_progress = False
+        self._awaiting_step_off = False
         self._last_error: str | None = None
         self._last_connect_time: datetime | None = None
         self._cooldown_until_mono: float = 0.0
@@ -190,15 +193,18 @@ class S400Coordinator:
     def async_start(self) -> None:
         """Start listening for BLE advertisements from the scale."""
         self._stopping = False
-        if (
-            self.hass.is_running
-            and bluetooth.async_scanner_count(self.hass, connectable=True) == 0
-        ):
-            _LOGGER.warning(
-                "No connectable Bluetooth adapters or proxies are currently available for %s (%s)",
-                self.entry.title,
-                self.address,
+
+        @callback
+        def _schedule_scanner_check(_hass: HomeAssistant) -> None:
+            self._cancel_scanner_check = async_call_later(
+                self.hass,
+                STARTUP_SCANNER_CHECK_DELAY_SECONDS,
+                self._async_check_connectable_scanners,
             )
+
+        self._cancel_scanner_check = async_at_started(
+            self.hass, _schedule_scanner_check
+        )
         self._unsub_bluetooth = bluetooth.async_register_callback(
             self.hass,
             self._async_on_bluetooth_event,
@@ -206,9 +212,25 @@ class S400Coordinator:
             bluetooth.BluetoothScanningMode.PASSIVE,
         )
 
+    @callback
+    def _async_check_connectable_scanners(self, _now: datetime) -> None:
+        """Warn once after startup if no connectable Bluetooth scanner is available."""
+        self._cancel_scanner_check = None
+        if self._stopping:
+            return
+        if bluetooth.async_scanner_count(self.hass, connectable=True) == 0:
+            _LOGGER.warning(
+                "No connectable Bluetooth adapters or proxies are available for %s (%s)",
+                self.entry.title,
+                self.address,
+            )
+
     async def async_stop(self) -> None:
         """Stop BLE listener and disconnect if connected."""
         self._stopping = True
+        if self._cancel_scanner_check is not None:
+            self._cancel_scanner_check()
+            self._cancel_scanner_check = None
         if self._cancel_cooldown_retry is not None:
             self._cancel_cooldown_retry()
             self._cancel_cooldown_retry = None
@@ -330,8 +352,6 @@ class S400Coordinator:
     def _record_failure(self, message: str) -> None:
         """Record a connection or handshake failure and log with rate limiting."""
         self._decay_failures_if_stale()
-        if bluetooth.async_scanner_count(self.hass, connectable=True) == 0:
-            message = f"{message} (no connectable Bluetooth adapters or proxies available)"
         self._consecutive_failures += 1
         self._last_error = message
         if (
@@ -357,9 +377,9 @@ class S400Coordinator:
 
         client: BleakClientWithServiceCache | None = None
         authenticated = False
-        self._session_received_frame = False
         self._session_received_final = False
         self._weigh_in_in_progress = False
+        self._awaiting_step_off = False
         try:
             _LOGGER.debug("Connecting to Xiaomi S400 Scale (%s)...", self.address)
             client = await establish_connection(
@@ -451,10 +471,7 @@ class S400Coordinator:
                 self._record_failure(f"unexpected error: {exc}")
             _LOGGER.exception("Unexpected error in BLE session on %s", self.address)
         finally:
-            if authenticated and (
-                self._weigh_in_in_progress
-                or (self._session_received_frame and not self._session_received_final)
-            ):
+            if authenticated and self._weigh_in_in_progress:
                 # Session dropped mid-weigh-in before final frame: use short cooldown
                 # and schedule a retry so we reconnect while the user is still on the scale.
                 self._consecutive_idle_sessions = 0
@@ -533,7 +550,6 @@ class S400Coordinator:
                 return
             if data is None:
                 return
-            self._session_received_frame = True
             try:
                 ack, msg = reassembler.feed(data)
             except FrameSequenceError as exc:
@@ -546,28 +562,32 @@ class S400Coordinator:
             if ack is not None:
                 await client.write_gatt_char(CMTP, ack, response=False)
 
-    async def _handle_full_frame(self, keys: SessionKeys, ciphertext: bytes) -> bool:
-        """Decrypt and process a reassembled CMTP payload. Returns True on valid final reading."""
+    async def _handle_full_frame(self, keys: SessionKeys, ciphertext: bytes) -> None:
+        """Decrypt and process a reassembled CMTP payload."""
         pt = decrypt_cmtp(keys, ciphertext)
         if pt is None:
             _LOGGER.debug("CMTP decrypt failed on %s: %s", self.address, ciphertext.hex())
-            return False
+            return
         event = parse_cmtp_payload(pt)
         if event is None:
             _LOGGER.debug("Unparsed CMTP payload on %s: %s", self.address, pt.hex())
-            return False
+            return
 
         if event.type == "live":
-            if event.weight_kg is not None and event.weight_kg > 0:
-                self._weigh_in_in_progress = True
+            if event.weight_kg is None or event.weight_kg <= 0:
+                self._awaiting_step_off = False
+                self._weigh_in_in_progress = False
+                self.state.live_weight_kg = event.weight_kg
+                self.state.stable = False
+            else:
+                if not event.stable:
+                    self._awaiting_step_off = False
+                if not self._awaiting_step_off:
+                    self._weigh_in_in_progress = True
                 self.state.live_weight_kg = event.weight_kg
                 self.state.stable = event.stable
-            else:
-                self._weigh_in_in_progress = False
-                self.state.live_weight_kg = None
-                self.state.stable = False
             self._async_notify_listeners()
-            return False
+            return
 
         if event.type == "final":
             if (
@@ -580,8 +600,9 @@ class S400Coordinator:
                     self.address,
                     event,
                 )
-                return False
+                return
             self._weigh_in_in_progress = False
+            self._awaiting_step_off = True
             self._session_received_final = True
             self.state.live_weight_kg = event.weight_kg
             self.state.final_weight_kg = event.weight_kg
@@ -599,6 +620,3 @@ class S400Coordinator:
             self.state.last_measurement = dt_util.utcnow()
 
             self._async_notify_listeners()
-            return True
-
-        return False
