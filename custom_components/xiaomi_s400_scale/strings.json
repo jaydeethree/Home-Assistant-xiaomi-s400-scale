@@ -74,6 +74,9 @@
       },
       "last_measurement": {
         "name": "Last measurement"
+      },
+      "profile_id": {
+        "name": "Profile ID"
       }
     },
     "binary_sensor": {
