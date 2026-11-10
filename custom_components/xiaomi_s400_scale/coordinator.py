@@ -593,7 +593,7 @@ class S400Coordinator:
             return
 
         if event.type == "live":
-            prev_active = self.state.live_weight_kg is not None
+            prev_weight = self.state.live_weight_kg
             prev_stable = self.state.stable
             if event.weight_kg is None or event.weight_kg <= 0:
                 self.state.live_weight_kg = None
@@ -601,8 +601,10 @@ class S400Coordinator:
             else:
                 self.state.live_weight_kg = event.weight_kg
                 self.state.stable = event.stable
-            now_active = self.state.live_weight_kg is not None
-            if now_active != prev_active or self.state.stable != prev_stable:
+            if (
+                self.state.live_weight_kg != prev_weight
+                or self.state.stable != prev_stable
+            ):
                 _LOGGER.debug(
                     "Live measurement on %s: weight=%s kg, stable=%s",
                     self.address,
@@ -613,13 +615,9 @@ class S400Coordinator:
             return
 
         if event.type == "final":
-            if (
-                event.weight_kg is None
-                or event.weight_kg <= 0
-                or not event.stable
-            ):
+            if event.weight_kg is None or event.weight_kg <= 0:
                 _LOGGER.debug(
-                    "Ignoring incomplete/unstable final frame on %s: %s",
+                    "Ignoring invalid final frame on %s: %s",
                     self.address,
                     event,
                 )
