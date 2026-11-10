@@ -179,11 +179,28 @@ class S400Coordinator:
             ) is not None:
                 self._async_on_advertisement(service_info)
 
-        self._unsub_bluetooth = bluetooth.async_register_advertisement_callback(
-            self.hass,
-            self._async_on_advertisement,
-            self.address,
-        )
+        if hasattr(bluetooth, "async_register_advertisement_callback"):
+            self._unsub_bluetooth = bluetooth.async_register_advertisement_callback(
+                self.hass,
+                self._async_on_advertisement,
+                self.address,
+            )
+        else:
+            @callback
+            def _on_bluetooth_event(
+                service_info: bluetooth.BluetoothServiceInfoBleak,
+                _change: bluetooth.BluetoothChange,
+            ) -> None:
+                self._async_on_advertisement(service_info)
+
+            self._unsub_bluetooth = bluetooth.async_register_callback(
+                self.hass,
+                _on_bluetooth_event,
+                bluetooth.BluetoothCallbackMatcher(
+                    address=self.address, connectable=True
+                ),
+                bluetooth.BluetoothScanningMode.PASSIVE,
+            )
         unsub_started = async_at_started(self.hass, _on_started)
         if self._cancel_scanner_check is None:
             self._cancel_scanner_check = unsub_started
