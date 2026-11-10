@@ -47,12 +47,13 @@ async def async_get_config_entry_diagnostics(
             "mibeacon_frame_counter": frame_counter,
         }
 
-    last_error = coordinator.last_error
-    if last_error is not None:
-        last_error = re.sub(
+    def _redact_address(text: str | None) -> str | None:
+        if text is None:
+            return None
+        return re.sub(
             re.escape(coordinator.address),
             REDACTED,
-            last_error,
+            text,
             flags=re.IGNORECASE,
         )
 
@@ -63,7 +64,11 @@ async def async_get_config_entry_diagnostics(
         "session_active": coordinator.session_active,
         "consecutive_failures": coordinator.consecutive_failures,
         "cooldown_remaining": round(coordinator.cooldown_remaining, 1),
-        "last_error": last_error,
+        "last_error": _redact_address(coordinator.last_error),
         "last_connect_time": coordinator.last_connect_time,
+        "total_sessions": coordinator.total_sessions,
+        "last_session_duration_s": coordinator.last_session_duration_s,
+        "longest_session_duration_s": coordinator.longest_session_duration_s,
+        "last_disconnect_reason": _redact_address(coordinator.last_disconnect_reason),
         "bluetooth": bt_info,
     }
