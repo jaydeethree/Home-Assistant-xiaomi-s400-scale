@@ -25,7 +25,7 @@ class S400Entity(Entity):
         """Initialize the entity."""
         self.coordinator = coordinator
         self.entity_description = description
-        self._last_state_key: tuple[bool, object, object] | None = None
+        self._last_state_key: tuple[bool, object] | None = None
         address = coordinator.address
 
         self._attr_unique_id = f"{address}_{description.key}"
@@ -49,7 +49,6 @@ class S400Entity(Entity):
         self._last_state_key = (
             self.available,
             self.state,
-            self.coordinator.state.last_measurement,
         )
         self.async_on_remove(
             self.coordinator.async_add_listener(self._handle_coordinator_update)
@@ -61,7 +60,6 @@ class S400Entity(Entity):
         state_key = (
             self.available,
             self.state,
-            self.coordinator.state.last_measurement,
         )
         if state_key == self._last_state_key:
             return

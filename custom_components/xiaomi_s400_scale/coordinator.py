@@ -28,7 +28,6 @@ from homeassistant.util import dt as dt_util
 
 from .auth import AuthError, BadTokenError, NotifyHub, login
 from .const import (
-    ACTIVE_ADVERTISEMENT_SECONDS,
     FAILURE_RESET_SECONDS,
     LIVE_WEIGHT_RESET_SECONDS,
     MAX_RECONNECT_COOLDOWN_SECONDS,
@@ -251,7 +250,7 @@ class S400Coordinator:
                 )
             return
         _LOGGER.debug(
-            "Advertisement wake trigger on %s (source=%s, rssi=%s)",
+            "Advertisement received on %s (source=%s, rssi=%s); connecting",
             self.address,
             service_info.source,
             service_info.rssi,
@@ -260,19 +259,14 @@ class S400Coordinator:
 
     @callback
     def _async_cooldown_expired(self, _now: datetime) -> None:
-        """Connect after cooldown if the scale is actively advertising right now."""
+        """Reconnect after cooldown if the scale was seen recently."""
         self._cancel_cooldown_retry = None
-        if self._stopping or self._auth_failed or self.connecting:
-            return
-        service_info = bluetooth.async_last_service_info(
-            self.hass, self.address, connectable=True
-        )
         if (
-            service_info is None
-            or (time.monotonic() - service_info.time) > ACTIVE_ADVERTISEMENT_SECONDS
-        ):
-            return
-        self._schedule_connect(self._async_get_ble_device(service_info.device))
+            service_info := bluetooth.async_last_service_info(
+                self.hass, self.address, connectable=True
+            )
+        ) is not None:
+            self._async_on_advertisement(service_info)
 
     @callback
     def _schedule_connect(self, ble_device: BLEDevice) -> None:
