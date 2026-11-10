@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -27,14 +26,13 @@ class S400Entity(Entity):
         self.coordinator = coordinator
         self.entity_description = description
         self._last_state_key: tuple[bool, object, object] | None = None
-        entry = coordinator.entry
-        address = entry.data[CONF_ADDRESS].upper()
+        address = coordinator.address
 
         self._attr_unique_id = f"{address}_{description.key}"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, address)},
             connections={(dr.CONNECTION_BLUETOOTH, address)},
-            name=entry.title,
+            name=coordinator.entry.title,
             manufacturer=MANUFACTURER,
             model=MODEL_NAME,
             model_id=MODEL_ID,
