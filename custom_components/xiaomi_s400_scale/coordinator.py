@@ -29,6 +29,7 @@ from homeassistant.util import dt as dt_util
 from .auth import AuthError, BadTokenError, NotifyHub, login
 from .const import (
     FAILURE_RESET_SECONDS,
+    IDLE_WATCHDOG_SECONDS,
     LIVE_WEIGHT_RESET_SECONDS,
     MAX_RECONNECT_COOLDOWN_SECONDS,
     RECENT_ADVERTISEMENT_SECONDS,
@@ -526,25 +527,31 @@ class S400Coordinator:
             has_live_state = (
                 self.state.live_weight_kg is not None or self.state.stable
             )
-            timeout = LIVE_WEIGHT_RESET_SECONDS if has_live_state else None
+            timeout = (
+                LIVE_WEIGHT_RESET_SECONDS
+                if has_live_state
+                else IDLE_WATCHDOG_SECONDS
+            )
             try:
                 async with asyncio.timeout(timeout):
                     data = await q.get()
             except TimeoutError:
+                # Local property check only (zero BLE traffic) in case a disconnect callback was missed.
                 if not client.is_connected:
                     _LOGGER.debug(
                         "BLE link no longer connected on %s; ending session",
                         self.address,
                     )
                     return
-                _LOGGER.debug(
-                    "No CMTP frames for %ss on %s; clearing live weight state",
-                    timeout,
-                    self.address,
-                )
-                self.state.live_weight_kg = None
-                self.state.stable = False
-                self._async_notify_listeners()
+                if has_live_state:
+                    _LOGGER.debug(
+                        "No CMTP frames for %ss on %s; clearing live weight state",
+                        timeout,
+                        self.address,
+                    )
+                    self.state.live_weight_kg = None
+                    self.state.stable = False
+                    self._async_notify_listeners()
                 continue
             if data is None:
                 _LOGGER.debug("BLE link disconnected on %s", self.address)
