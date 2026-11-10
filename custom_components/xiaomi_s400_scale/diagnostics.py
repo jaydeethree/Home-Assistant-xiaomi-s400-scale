@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import re
 import time
 from typing import Any
 
 from homeassistant.components import bluetooth
-from homeassistant.components.diagnostics import async_redact_data
-from homeassistant.const import CONF_ADDRESS
+from homeassistant.components.diagnostics import REDACTED, async_redact_data
+from homeassistant.const import CONF_ADDRESS, CONF_TOKEN
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_TOKEN
 from .coordinator import S400ConfigEntry
 from .protocol import MIBEACON_SERVICE_UUID
 
@@ -47,6 +47,15 @@ async def async_get_config_entry_diagnostics(
             "mibeacon_frame_counter": frame_counter,
         }
 
+    last_error = coordinator.last_error
+    if last_error is not None:
+        last_error = re.sub(
+            re.escape(coordinator.address),
+            REDACTED,
+            last_error,
+            flags=re.IGNORECASE,
+        )
+
     return {
         "entry": async_redact_data(entry.as_dict(), TO_REDACT),
         "state": asdict(coordinator.state),
@@ -54,7 +63,7 @@ async def async_get_config_entry_diagnostics(
         "connecting": coordinator.connecting,
         "consecutive_failures": coordinator.consecutive_failures,
         "cooldown_remaining": round(coordinator.cooldown_remaining, 1),
-        "last_error": coordinator.last_error,
+        "last_error": last_error,
         "last_connect_time": coordinator.last_connect_time,
         "bluetooth": bt_info,
     }
