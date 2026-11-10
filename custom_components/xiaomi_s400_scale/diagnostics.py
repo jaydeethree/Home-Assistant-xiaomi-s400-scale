@@ -16,6 +16,7 @@ from .coordinator import S400ConfigEntry
 from .protocol import MIBEACON_SERVICE_UUID
 
 TO_REDACT = {CONF_ADDRESS, CONF_TOKEN, "discovery_keys", "title", "unique_id"}
+MAC_PATTERN = re.compile(r"(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}")
 
 
 async def async_get_config_entry_diagnostics(
@@ -23,8 +24,23 @@ async def async_get_config_entry_diagnostics(
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
     coordinator = entry.runtime_data
+
+    def _redact_macs(text: str | None) -> str | None:
+        if text is None:
+            return None
+        redacted = re.sub(
+            re.escape(coordinator.address),
+            REDACTED,
+            text,
+            flags=re.IGNORECASE,
+        )
+        return MAC_PATTERN.sub(REDACTED, redacted)
+
+    connectable_scanners = bluetooth.async_scanner_count(hass, connectable=True)
     service_info = bluetooth.async_last_service_info(
         hass, coordinator.address, connectable=True
+    ) or bluetooth.async_last_service_info(
+        hass, coordinator.address, connectable=False
     )
     bt_info: dict[str, Any] | None = None
     if service_info is not None:
@@ -39,23 +55,13 @@ async def async_get_config_entry_diagnostics(
             "name": service_info.name,
             "connectable": service_info.connectable,
             "rssi": service_info.rssi,
-            "source": service_info.source,
+            "source": _redact_macs(service_info.source),
             "seconds_since_last_advertisement": round(
                 max(0.0, time.monotonic() - service_info.time), 1
             ),
             "mibeacon_product_id": product_id,
             "mibeacon_frame_counter": frame_counter,
         }
-
-    def _redact_address(text: str | None) -> str | None:
-        if text is None:
-            return None
-        return re.sub(
-            re.escape(coordinator.address),
-            REDACTED,
-            text,
-            flags=re.IGNORECASE,
-        )
 
     return {
         "entry": async_redact_data(entry.as_dict(), TO_REDACT),
@@ -64,11 +70,12 @@ async def async_get_config_entry_diagnostics(
         "session_active": coordinator.session_active,
         "consecutive_failures": coordinator.consecutive_failures,
         "cooldown_remaining": round(coordinator.cooldown_remaining, 1),
-        "last_error": _redact_address(coordinator.last_error),
+        "last_error": _redact_macs(coordinator.last_error),
         "last_connect_time": coordinator.last_connect_time,
         "total_sessions": coordinator.total_sessions,
         "last_session_duration_s": coordinator.last_session_duration_s,
         "longest_session_duration_s": coordinator.longest_session_duration_s,
-        "last_disconnect_reason": _redact_address(coordinator.last_disconnect_reason),
+        "last_disconnect_reason": _redact_macs(coordinator.last_disconnect_reason),
+        "connectable_scanners": connectable_scanners,
         "bluetooth": bt_info,
     }
