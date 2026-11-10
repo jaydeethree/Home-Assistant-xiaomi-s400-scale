@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hmac
 
 from cryptography.exceptions import InvalidTag
@@ -15,11 +15,11 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 class SessionKeys:
     """Session keys derived during Mi Home v2 BLE login."""
 
-    dev_key: bytes  # 16B - device -> app encryption key
-    app_key: bytes  # 16B - app -> device encryption key
-    dev_iv: bytes   # 4B
-    app_iv: bytes   # 4B
-    dev_cipher: AESCCM
+    dev_key: bytes = field(repr=False)  # 16B - device -> app encryption key
+    app_key: bytes = field(repr=False)  # 16B - app -> device encryption key
+    dev_iv: bytes = field(repr=False)  # 4B
+    app_iv: bytes = field(repr=False)  # 4B
+    dev_cipher: AESCCM = field(repr=False)
 
 
 def derive_login_keys(token: bytes, app_rand: bytes, dev_rand: bytes) -> SessionKeys:
