@@ -102,6 +102,7 @@ class ScaleEvent:
     impedance_ohm: float | None = None
     impedance_low_ohm: float | None = None
     profile_id: int | None = None
+    device_timestamp: int | None = None
 
 
 def parse_cmtp_payload(pt: bytes) -> ScaleEvent | None:
@@ -135,7 +136,8 @@ def parse_cmtp_payload(pt: bytes) -> ScaleEvent | None:
             stable=parts[1] == "1",
         )
     if len(parts) == FINAL_CSV_FIELD_COUNT:
-        if parts[4] not in ("0", "1") or _i(parts[6]) is None:
+        dev_ts = _i(parts[6])
+        if parts[4] not in ("0", "1") or dev_ts is None:
             return None
         w = _i(parts[3])
         if w is None or not (0 < w <= MAX_WEIGHT_KG * 10):
@@ -149,5 +151,6 @@ def parse_cmtp_payload(pt: bytes) -> ScaleEvent | None:
             impedance_ohm=imp / 10 if imp is not None else None,
             impedance_low_ohm=imp_low / 10 if imp_low is not None else None,
             profile_id=_i(parts[2]),
+            device_timestamp=dev_ts,
         )
     return None
