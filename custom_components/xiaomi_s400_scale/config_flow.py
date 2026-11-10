@@ -47,6 +47,7 @@ HEX_24_REGEX = re.compile(r"^[0-9A-Fa-f]{24}$")
 
 TEXT_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
 AUTH_NOTIFY_UUIDS = (UPNP, AVDTP)
+VALIDATION_TIMEOUT_SECONDS = 35.0
 
 
 def _clean_token(raw: str) -> str:
@@ -106,26 +107,27 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
 
         client: BleakClientWithServiceCache | None = None
         try:
-            client = await establish_connection(
-                BleakClientWithServiceCache,
-                ble_device,
-                address,
-                disconnected_callback=_on_disconnect,
-                max_attempts=3,
-                ble_device_callback=lambda: (
-                    async_ble_device_from_address(
-                        self.hass, address, connectable=True
-                    )
-                    or ble_device
-                ),
-            )
-            hub = NotifyHub()
-            if not client.is_connected:
-                hub.mark_disconnected()
-            for uuid in AUTH_NOTIFY_UUIDS:
-                await client.start_notify(uuid, hub.make_callback(uuid))
-            await asyncio.sleep(SETTLE_DELAY_SECONDS)
-            await login(client, bytes.fromhex(token_hex), hub)
+            async with asyncio.timeout(VALIDATION_TIMEOUT_SECONDS):
+                client = await establish_connection(
+                    BleakClientWithServiceCache,
+                    ble_device,
+                    address,
+                    disconnected_callback=_on_disconnect,
+                    max_attempts=3,
+                    ble_device_callback=lambda: (
+                        async_ble_device_from_address(
+                            self.hass, address, connectable=True
+                        )
+                        or ble_device
+                    ),
+                )
+                hub = NotifyHub()
+                if not client.is_connected:
+                    hub.mark_disconnected()
+                for uuid in AUTH_NOTIFY_UUIDS:
+                    await client.start_notify(uuid, hub.make_callback(uuid))
+                await asyncio.sleep(SETTLE_DELAY_SECONDS)
+                await login(client, bytes.fromhex(token_hex), hub)
         except BadTokenError as exc:
             _LOGGER.debug("BLE token validation failed on %s: %s", address, exc)
             return "invalid_auth"
