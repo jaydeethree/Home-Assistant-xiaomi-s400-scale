@@ -12,7 +12,7 @@ import time
 
 from bleak import BleakClient
 from bleak.backends.device import BLEDevice
-from bleak.exc import BleakError
+from bleak.exc import BleakCharacteristicNotFoundError, BleakError
 from bleak_retry_connector import (
     BleakClientWithServiceCache,
     BleakOutOfConnectionSlotsError,
@@ -358,9 +358,14 @@ class S400Coordinator:
             try:
                 for uuid in REQUIRED_NOTIFY_UUIDS:
                     await client.start_notify(uuid, hub.make_callback(uuid))
-            except (BleakError, TimeoutError, EOFError, OSError):
-                with contextlib.suppress(BleakError, TimeoutError, EOFError, OSError):
-                    await client.clear_cache()
+            except BleakError as exc:
+                if isinstance(exc, BleakCharacteristicNotFoundError) or (
+                    client.is_connected and "not found" in str(exc).lower()
+                ):
+                    with contextlib.suppress(
+                        BleakError, TimeoutError, EOFError, OSError
+                    ):
+                        await client.clear_cache()
                 raise
 
             await asyncio.sleep(SETTLE_DELAY_SECONDS)
