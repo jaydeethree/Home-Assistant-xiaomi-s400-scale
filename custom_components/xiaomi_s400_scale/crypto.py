@@ -19,6 +19,7 @@ class SessionKeys:
     app_key: bytes  # 16B - app -> device encryption key
     dev_iv: bytes   # 4B
     app_iv: bytes   # 4B
+    dev_cipher: AESCCM
 
 
 def derive_login_keys(token: bytes, app_rand: bytes, dev_rand: bytes) -> SessionKeys:
@@ -30,11 +31,13 @@ def derive_login_keys(token: bytes, app_rand: bytes, dev_rand: bytes) -> Session
         salt=salt,
         info=b"mible-login-info",
     ).derive(token)
+    dev_key = derived[0:16]
     return SessionKeys(
-        dev_key=derived[0:16],
+        dev_key=dev_key,
         app_key=derived[16:32],
         dev_iv=derived[32:36],
         app_iv=derived[36:40],
+        dev_cipher=AESCCM(dev_key, tag_length=4),
     )
 
 
@@ -55,6 +58,6 @@ def decrypt_cmtp(keys: SessionKeys, raw: bytes) -> bytes | None:
         it = raw[:2]
         ct = raw[2:]
         nonce = keys.dev_iv + bytes(4) + it + bytes(2)
-        return AESCCM(keys.dev_key, tag_length=4).decrypt(nonce, ct, None)
+        return keys.dev_cipher.decrypt(nonce, ct, None)
     except (InvalidTag, ValueError):
         return None
