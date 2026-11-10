@@ -93,6 +93,7 @@ class S400Coordinator:
         self._measurement_listeners: list[Callable[[], None]] = []
         self._active_task: asyncio.Task[None] | None = None
         self._unsub_bluetooth: CALLBACK_TYPE | None = None
+        self._unsub_started: CALLBACK_TYPE | None = None
         self._cancel_cooldown_retry: CALLBACK_TYPE | None = None
         self._cancel_scanner_check: CALLBACK_TYPE | None = None
         self._stopping = False
@@ -210,9 +211,21 @@ class S400Coordinator:
     def async_start(self) -> None:
         """Start listening for BLE advertisements from the scale."""
         self._stopping = False
+        if self._unsub_bluetooth is not None:
+            self._unsub_bluetooth()
+            self._unsub_bluetooth = None
+        if self._unsub_started is not None:
+            self._unsub_started()
+            self._unsub_started = None
+        if self._cancel_scanner_check is not None:
+            self._cancel_scanner_check()
+            self._cancel_scanner_check = None
 
         @callback
         def _on_started(_hass: HomeAssistant) -> None:
+            self._unsub_started = None
+            if self._cancel_scanner_check is not None:
+                self._cancel_scanner_check()
             self._cancel_scanner_check = async_call_later(
                 self.hass,
                 STARTUP_SCANNER_CHECK_DELAY_SECONDS,
@@ -241,9 +254,7 @@ class S400Coordinator:
             ),
             bluetooth.BluetoothScanningMode.PASSIVE,
         )
-        unsub_started = async_at_started(self.hass, _on_started)
-        if self._cancel_scanner_check is None:
-            self._cancel_scanner_check = unsub_started
+        self._unsub_started = async_at_started(self.hass, _on_started)
 
     @callback
     def _async_check_connectable_scanners(self, _now: datetime) -> None:
@@ -261,6 +272,9 @@ class S400Coordinator:
     async def async_stop(self) -> None:
         """Stop BLE listener and disconnect if connected."""
         self._stopping = True
+        if self._unsub_started is not None:
+            self._unsub_started()
+            self._unsub_started = None
         if self._cancel_scanner_check is not None:
             self._cancel_scanner_check()
             self._cancel_scanner_check = None
