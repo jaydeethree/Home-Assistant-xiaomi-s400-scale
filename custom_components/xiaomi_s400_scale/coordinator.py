@@ -101,6 +101,10 @@ class S400Coordinator:
         self._last_error: str | None = None
         self._last_connect_time: datetime | None = None
         self._cooldown_until_mono: float = 0.0
+        self._total_sessions = 0
+        self._last_session_duration_s: float | None = None
+        self._longest_session_duration_s: float | None = None
+        self._last_disconnect_reason: str | None = None
 
     @property
     def auth_failed(self) -> bool:
@@ -131,6 +135,26 @@ class S400Coordinator:
     def cooldown_remaining(self) -> float:
         """Return seconds remaining in the current reconnect cooldown window."""
         return max(0.0, self._cooldown_until_mono - time.monotonic())
+
+    @property
+    def total_sessions(self) -> int:
+        """Return the total number of authenticated BLE sessions established."""
+        return self._total_sessions
+
+    @property
+    def last_session_duration_s(self) -> float | None:
+        """Return the duration in seconds of the most recent authenticated session."""
+        return self._last_session_duration_s
+
+    @property
+    def longest_session_duration_s(self) -> float | None:
+        """Return the longest authenticated session duration in seconds."""
+        return self._longest_session_duration_s
+
+    @property
+    def last_disconnect_reason(self) -> str | None:
+        """Return the reason the most recent authenticated session ended."""
+        return self._last_disconnect_reason
 
     @callback
     def async_add_listener(self, update_callback: Callable[[], None]) -> Callable[[], None]:
@@ -340,6 +364,8 @@ class S400Coordinator:
 
         client: BleakClientWithServiceCache | None = None
         authenticated = False
+        session_start_mono: float | None = None
+        disconnect_reason = "remote_disconnect"
         self._consecutive_decrypt_failures = 0
         try:
             _LOGGER.debug("Connecting to Xiaomi S400 Scale (%s)...", self.address)
@@ -370,6 +396,8 @@ class S400Coordinator:
             await asyncio.sleep(SETTLE_DELAY_SECONDS)
             keys = await login(client, self.token, hub)
             authenticated = True
+            session_start_mono = time.monotonic()
+            self._total_sessions += 1
             if self._warned_failure_streak:
                 _LOGGER.info(
                     "Connection to Xiaomi S400 Scale (%s) restored after %d failed attempts",
@@ -414,10 +442,13 @@ class S400Coordinator:
                     exc,
                 )
         except AuthError as exc:
+            disconnect_reason = f"auth_error: {exc}"
             self._record_failure(str(exc))
         except asyncio.CancelledError:
+            disconnect_reason = "stopped" if self._stopping else "cancelled"
             raise
         except BleakOutOfConnectionSlotsError as exc:
+            disconnect_reason = f"out_of_slots: {exc}"
             if authenticated:
                 _LOGGER.debug("BLE session ended on %s: %s", self.address, exc)
             else:
@@ -425,14 +456,25 @@ class S400Coordinator:
                     f"all Bluetooth adapter/proxy connection slots are in use: {exc}"
                 )
         except (BleakError, TimeoutError, EOFError, OSError) as exc:
+            disconnect_reason = f"ble_error: {exc}"
             if authenticated:
                 _LOGGER.debug("BLE session ended on %s: %s", self.address, exc)
             else:
                 self._record_failure(f"connection error: {exc}")
         except Exception as exc:
+            disconnect_reason = f"unexpected_error: {exc}"
             self._record_failure(f"unexpected error: {exc}")
             _LOGGER.exception("Unexpected error in BLE session on %s", self.address)
         finally:
+            if session_start_mono is not None:
+                duration = round(max(0.0, time.monotonic() - session_start_mono), 1)
+                self._last_session_duration_s = duration
+                if (
+                    self._longest_session_duration_s is None
+                    or duration > self._longest_session_duration_s
+                ):
+                    self._longest_session_duration_s = duration
+                self._last_disconnect_reason = disconnect_reason
             if client is not None and client.is_connected:
                 try:
                     await client.disconnect()
