@@ -8,7 +8,11 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from .coordinator import S400ConfigEntry, S400Coordinator
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
+PLATFORMS: list[Platform] = [
+    Platform.SENSOR,
+    Platform.BINARY_SENSOR,
+    Platform.EVENT,
+]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: S400ConfigEntry) -> bool:

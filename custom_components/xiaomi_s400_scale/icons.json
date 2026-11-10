@@ -28,6 +28,11 @@
           "on": "mdi:check-circle-outline"
         }
       }
+    },
+    "event": {
+      "measurement": {
+        "default": "mdi:scale-bathroom"
+      }
     }
   }
 }

@@ -88,6 +88,7 @@ class S400Coordinator:
         self.state = S400State()
 
         self._listeners: list[Callable[[], None]] = []
+        self._measurement_listeners: list[Callable[[], None]] = []
         self._active_task: asyncio.Task[None] | None = None
         self._unsub_bluetooth: CALLBACK_TYPE | None = None
         self._cancel_cooldown_retry: CALLBACK_TYPE | None = None
@@ -173,6 +174,25 @@ class S400Coordinator:
     def _async_notify_listeners(self) -> None:
         for update_callback in list(self._listeners):
             update_callback()
+
+    @callback
+    def async_add_measurement_listener(
+        self, measurement_callback: Callable[[], None]
+    ) -> Callable[[], None]:
+        """Listen for completed final measurements."""
+        self._measurement_listeners.append(measurement_callback)
+
+        @callback
+        def _remove() -> None:
+            if measurement_callback in self._measurement_listeners:
+                self._measurement_listeners.remove(measurement_callback)
+
+        return _remove
+
+    @callback
+    def _async_notify_measurement_listeners(self) -> None:
+        for measurement_callback in list(self._measurement_listeners):
+            measurement_callback()
 
     @callback
     def _async_get_ble_device(self, fallback: BLEDevice) -> BLEDevice:
@@ -647,4 +667,5 @@ class S400Coordinator:
                 self.state.profile_id,
             )
 
+            self._async_notify_measurement_listeners()
             self._async_notify_listeners()
