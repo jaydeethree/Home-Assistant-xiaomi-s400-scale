@@ -37,6 +37,7 @@ AUTH_ERRORS = {
 }
 
 MAX_WEIGHT_KG = 200.0
+FINAL_CSV_FIELD_COUNT = 32
 
 
 class FrameSequenceError(ValueError):
@@ -120,7 +121,7 @@ def parse_cmtp_payload(pt: bytes) -> ScaleEvent | None:
     parts = s.split(",")
 
     def _i(p: str) -> int | None:
-        return int(p) if p.isdigit() else None
+        return int(p) if p.isascii() and p.isdigit() else None
 
     if len(parts) == 2:
         if parts[1] not in ("0", "1"):
@@ -133,14 +134,14 @@ def parse_cmtp_payload(pt: bytes) -> ScaleEvent | None:
             weight_kg=w / 10,
             stable=parts[1] == "1",
         )
-    if len(parts) >= 8:
+    if len(parts) == FINAL_CSV_FIELD_COUNT:
         if parts[4] not in ("0", "1") or _i(parts[6]) is None:
             return None
         w = _i(parts[3])
         if w is None or not (0 < w <= MAX_WEIGHT_KG * 10):
             return None
-        imp = _i(parts[-2])
-        imp_low = _i(parts[-1])
+        imp = _i(parts[30])
+        imp_low = _i(parts[31])
         return ScaleEvent(
             type="final",
             weight_kg=w / 10,
