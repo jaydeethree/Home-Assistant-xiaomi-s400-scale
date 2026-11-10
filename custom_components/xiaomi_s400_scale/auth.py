@@ -56,6 +56,11 @@ class NotifyHub:
             self.queues[uuid] = q
         return self.queues[uuid]
 
+    def discard_queues(self, *uuids: str) -> None:
+        """Stop queuing notifications and release queues for the given UUIDs."""
+        for uuid in uuids:
+            self.queues.pop(uuid, None)
+
     def mark_disconnected(self) -> None:
         """Wake all waiting queues with a None sentinel on BLE disconnect."""
         self._disconnected = True
@@ -63,10 +68,11 @@ class NotifyHub:
             q.put_nowait(None)
 
     def make_callback(self, uuid: str) -> Callable[[int, bytearray], None]:
-        q = self.queue(uuid)
+        self.queue(uuid)
 
         def cb(_handle: int, data: bytearray) -> None:
-            q.put_nowait(bytes(data))
+            if (q := self.queues.get(uuid)) is not None:
+                q.put_nowait(bytes(data))
 
         return cb
 
@@ -182,4 +188,5 @@ async def login(
     if result != CFM_LOGIN_OK:
         raise AuthError(f"unexpected login response: {result.hex()}")
 
+    hub.discard_queues(UPNP, AVDTP)
     return keys

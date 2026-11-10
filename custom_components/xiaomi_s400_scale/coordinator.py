@@ -316,10 +316,11 @@ class S400Coordinator:
         )
 
     async def _async_connect_and_stream(self, ble_device: BLEDevice) -> None:
-        hub = NotifyHub()
+        hub: NotifyHub | None = None
 
         def _on_disconnect(_client: BleakClient) -> None:
-            hub.mark_disconnected()
+            if hub is not None:
+                hub.mark_disconnected()
 
         client: BleakClientWithServiceCache | None = None
         authenticated = False
@@ -334,6 +335,9 @@ class S400Coordinator:
                 max_attempts=3,
                 ble_device_callback=lambda: self._async_get_ble_device(ble_device),
             )
+            hub = NotifyHub()
+            if not client.is_connected:
+                hub.mark_disconnected()
             try:
                 for uuid in REQUIRED_NOTIFY_UUIDS:
                     await client.start_notify(uuid, hub.make_callback(uuid))
