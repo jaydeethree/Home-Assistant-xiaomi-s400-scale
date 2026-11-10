@@ -60,7 +60,7 @@ _LOGGER = logging.getLogger(__name__)
 type S400ConfigEntry = ConfigEntry[S400Coordinator]
 
 MAX_CONSECUTIVE_BAD_TOKENS = 3
-MAX_CONSECUTIVE_IDLE_SESSIONS = 2
+MAX_CONSECUTIVE_IDLE_SESSIONS = 1
 WARN_AFTER_CONSECUTIVE_FAILURES = 3
 REQUIRED_NOTIFY_UUIDS = (UPNP, AVDTP, CMTP)
 
@@ -299,6 +299,16 @@ class S400Coordinator:
                 return
 
         counter = _extract_mibeacon_counter(service_info)
+        if (
+            self._stopping
+            or self._auth_failed
+            or self.connecting
+        ):
+            self._last_adv_mono = now_mono
+            if counter is not None and self._last_mibeacon_counter is None:
+                self._last_mibeacon_counter = counter
+            return
+
         adv_gap = (now_mono - self._last_adv_mono) if self._last_adv_mono > 0 else 0.0
         gap_reset = adv_gap > WAKE_ADVERTISEMENT_GAP_SECONDS
         counter_reset = (
@@ -325,27 +335,21 @@ class S400Coordinator:
                 )
             self._consecutive_idle_sessions = 0
             if (
-                gap_reset
-                and self._consecutive_failures == 0
+                self._consecutive_failures == 0
                 and self._cooldown_until_mono > now_mono
             ):
                 _LOGGER.debug(
-                    "Clearing %.1fs idle cooldown on %s after %.1fs advertisement gap",
+                    "Clearing %.1fs cooldown on %s after new activity (gap=%.1fs, counter=%s->%s)",
                     self._cooldown_until_mono - now_mono,
                     self.address,
                     adv_gap,
+                    prev_counter,
+                    counter,
                 )
                 self._cooldown_until_mono = 0.0
                 if self._cancel_cooldown_retry is not None:
                     self._cancel_cooldown_retry()
                     self._cancel_cooldown_retry = None
-
-        if (
-            self._stopping
-            or self._auth_failed
-            or self.connecting
-        ):
-            return
 
         if self._consecutive_idle_sessions >= MAX_CONSECUTIVE_IDLE_SESSIONS:
             if (now_mono - self._last_skip_log_mono) >= ACTIVE_ADVERTISEMENT_SECONDS:
@@ -543,6 +547,13 @@ class S400Coordinator:
                 self._record_failure(f"unexpected error: {exc}")
             _LOGGER.exception("Unexpected error in BLE session on %s", self.address)
         finally:
+            if client is not None and client.is_connected:
+                try:
+                    await client.disconnect()
+                except (BleakError, TimeoutError, EOFError, OSError) as exc:
+                    _LOGGER.debug("Disconnect cleanup error on %s: %s", self.address, exc)
+            now_mono = time.monotonic()
+            self._last_adv_mono = now_mono
             if authenticated and self._weigh_in_in_progress:
                 # Session dropped mid-weigh-in before final frame: use short cooldown
                 # and schedule a retry so we reconnect while the user is still on the scale.
@@ -557,9 +568,14 @@ class S400Coordinator:
                         self.hass, cooldown, self._async_cooldown_expired
                     )
             elif self._session_received_final:
-                self._consecutive_idle_sessions = 0
+                # A completed weigh-in increments the scale's MiBeacon frame counter;
+                # re-seed the counter from the next post-disconnect advertisement and
+                # wait for a new wake gap or counter change before reconnecting.
+                self._last_mibeacon_counter = None
+                self._consecutive_idle_sessions = MAX_CONSECUTIVE_IDLE_SESSIONS
                 cooldown = POST_MEASUREMENT_COOLDOWN_SECONDS
             elif authenticated:
+                self._last_mibeacon_counter = None
                 self._consecutive_idle_sessions += 1
                 cooldown = IDLE_SESSION_COOLDOWN_SECONDS
                 if self._consecutive_idle_sessions >= MAX_CONSECUTIVE_IDLE_SESSIONS:
@@ -573,12 +589,7 @@ class S400Coordinator:
                     RECONNECT_COOLDOWN_SECONDS * (2**self._consecutive_failures),
                     MAX_RECONNECT_COOLDOWN_SECONDS,
                 )
-            self._cooldown_until_mono = time.monotonic() + cooldown
-            if client is not None and client.is_connected:
-                try:
-                    await client.disconnect()
-                except (BleakError, TimeoutError, EOFError, OSError) as exc:
-                    _LOGGER.debug("Disconnect cleanup error on %s: %s", self.address, exc)
+            self._cooldown_until_mono = now_mono + cooldown
             if (
                 self.state.connected
                 or self.state.stable
