@@ -8,12 +8,9 @@ from typing import Literal
 # Auth service (0xFE95) characteristic UUIDs
 UPNP = "00000010-0000-1000-8000-00805f9b34fb"   # client -> device commands
 AVDTP = "00000019-0000-1000-8000-00805f9b34fb"  # bidirectional auth data
-AVCTP = "00000017-0000-1000-8000-00805f9b34fb"
 
 # Encrypted command channel (post-login)
-VEND1A = "0000001a-0000-1000-8000-00805f9b34fb"  # app -> device encrypted
 CMTP = "0000001b-0000-1000-8000-00805f9b34fb"    # device -> app encrypted
-VEND1C = "0000001c-0000-1000-8000-00805f9b34fb"
 
 # MiBeacon advertisement service
 MIBEACON_SERVICE_UUID = "0000fe95-0000-1000-8000-00805f9b34fb"
