@@ -202,9 +202,9 @@ class S400Coordinator:
                 self._async_check_connectable_scanners,
             )
 
-        self._cancel_scanner_check = async_at_started(
-            self.hass, _schedule_scanner_check
-        )
+        unsub_started = async_at_started(self.hass, _schedule_scanner_check)
+        if self._cancel_scanner_check is None:
+            self._cancel_scanner_check = unsub_started
         self._unsub_bluetooth = bluetooth.async_register_callback(
             self.hass,
             self._async_on_bluetooth_event,
@@ -580,8 +580,6 @@ class S400Coordinator:
                 self.state.live_weight_kg = event.weight_kg
                 self.state.stable = False
             else:
-                if not event.stable:
-                    self._awaiting_step_off = False
                 if not self._awaiting_step_off:
                     self._weigh_in_in_progress = True
                 self.state.live_weight_kg = event.weight_kg
