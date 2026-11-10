@@ -20,7 +20,6 @@ from bleak_retry_connector import (
 )
 
 from homeassistant.components import bluetooth
-from homeassistant.components.bluetooth.match import BluetoothCallbackMatcher
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
@@ -30,10 +29,9 @@ from homeassistant.util import dt as dt_util
 from .auth import AuthError, BadTokenError, NotifyHub, login
 from .const import (
     ACTIVE_ADVERTISEMENT_SECONDS,
-    CMTP_IDLE_TIMEOUT_SECONDS,
     FAILURE_RESET_SECONDS,
+    LIVE_WEIGHT_RESET_SECONDS,
     MAX_RECONNECT_COOLDOWN_SECONDS,
-    POST_FINAL_GRACE_SECONDS,
     RECENT_ADVERTISEMENT_SECONDS,
     RECONNECT_COOLDOWN_SECONDS,
     SETTLE_DELAY_SECONDS,
@@ -90,7 +88,6 @@ class S400Coordinator:
 
         self._listeners: list[Callable[[], None]] = []
         self._active_task: asyncio.Task[None] | None = None
-        self._unsub_adv: CALLBACK_TYPE | None = None
         self._unsub_bluetooth: CALLBACK_TYPE | None = None
         self._cancel_cooldown_retry: CALLBACK_TYPE | None = None
         self._cancel_scanner_check: CALLBACK_TYPE | None = None
@@ -100,9 +97,6 @@ class S400Coordinator:
         self._consecutive_failures = 0
         self._warned_failure_streak = False
         self._last_failure_mono: float = 0.0
-        self._last_service_info: bluetooth.BluetoothServiceInfoBleak | None = None
-        self._weigh_in_in_progress = False
-        self._awaiting_step_off = False
         self._last_error: str | None = None
         self._last_connect_time: datetime | None = None
         self._cooldown_until_mono: float = 0.0
@@ -180,17 +174,17 @@ class S400Coordinator:
         unsub_started = async_at_started(self.hass, _schedule_scanner_check)
         if self._cancel_scanner_check is None:
             self._cancel_scanner_check = unsub_started
-        self._unsub_adv = bluetooth.async_register_advertisement_callback(
+        self._unsub_bluetooth = bluetooth.async_register_advertisement_callback(
             self.hass,
             self._async_on_advertisement,
             self.address,
         )
-        self._unsub_bluetooth = bluetooth.async_register_callback(
-            self.hass,
-            self._async_on_bluetooth_event,
-            BluetoothCallbackMatcher(address=self.address, connectable=True),
-            bluetooth.BluetoothScanningMode.PASSIVE,
-        )
+        if (
+            service_info := bluetooth.async_last_service_info(
+                self.hass, self.address, connectable=True
+            )
+        ) is not None:
+            self._async_on_advertisement(service_info)
 
     @callback
     def _async_check_connectable_scanners(self, _now: datetime) -> None:
@@ -214,9 +208,6 @@ class S400Coordinator:
         if self._cancel_cooldown_retry is not None:
             self._cancel_cooldown_retry()
             self._cancel_cooldown_retry = None
-        if self._unsub_adv is not None:
-            self._unsub_adv()
-            self._unsub_adv = None
         if self._unsub_bluetooth is not None:
             self._unsub_bluetooth()
             self._unsub_bluetooth = None
@@ -236,33 +227,11 @@ class S400Coordinator:
         self,
         service_info: bluetooth.BluetoothServiceInfoBleak,
     ) -> None:
-        """Handle every raw advertisement from the scale (including unchanged payloads)."""
-        self._async_handle_advertisement(service_info)
-
-    @callback
-    def _async_on_bluetooth_event(
-        self,
-        service_info: bluetooth.BluetoothServiceInfoBleak,
-        change: bluetooth.BluetoothChange,
-    ) -> None:
-        """Handle a changed or replayed advertisement from habluetooth."""
-        self._async_handle_advertisement(service_info)
-
-    @callback
-    def _async_handle_advertisement(
-        self,
-        service_info: bluetooth.BluetoothServiceInfoBleak,
-    ) -> None:
         """Process an incoming advertisement and connect if not already connected."""
-        if service_info is self._last_service_info:
-            return
-        self._last_service_info = service_info
-
         if self._stopping or self._auth_failed or self.connecting:
             return
 
-        now_mono = time.monotonic()
-        if (now_mono - service_info.time) > RECENT_ADVERTISEMENT_SECONDS:
+        if (time.monotonic() - service_info.time) > RECENT_ADVERTISEMENT_SECONDS:
             return
 
         if service_info.connectable:
@@ -357,8 +326,6 @@ class S400Coordinator:
 
         client: BleakClientWithServiceCache | None = None
         authenticated = False
-        self._weigh_in_in_progress = False
-        self._awaiting_step_off = False
         try:
             _LOGGER.debug("Connecting to Xiaomi S400 Scale (%s)...", self.address)
             client = await establish_connection(
@@ -489,31 +456,23 @@ class S400Coordinator:
         q = hub.queue(CMTP)
         reassembler = ParcelReassembler()
         while True:
-            if self._weigh_in_in_progress:
-                timeout: float | None = CMTP_IDLE_TIMEOUT_SECONDS
-            elif (
-                self._awaiting_step_off
-                or self.state.live_weight_kg is not None
-                or self.state.stable
-            ):
-                timeout = POST_FINAL_GRACE_SECONDS
-            else:
-                timeout = None
+            timeout = (
+                LIVE_WEIGHT_RESET_SECONDS
+                if (self.state.live_weight_kg is not None or self.state.stable)
+                else None
+            )
             try:
                 async with asyncio.timeout(timeout):
                     data = await q.get()
             except TimeoutError:
                 _LOGGER.debug(
-                    "Weigh-in idle for %ss on %s; clearing live weight state",
+                    "No CMTP frames for %ss on %s; clearing live weight state",
                     timeout,
                     self.address,
                 )
-                self._weigh_in_in_progress = False
-                self._awaiting_step_off = False
-                if self.state.live_weight_kg is not None or self.state.stable:
-                    self.state.live_weight_kg = None
-                    self.state.stable = False
-                    self._async_notify_listeners()
+                self.state.live_weight_kg = None
+                self.state.stable = False
+                self._async_notify_listeners()
                 continue
             if data is None:
                 _LOGGER.debug("BLE link disconnected on %s", self.address)
@@ -542,22 +501,20 @@ class S400Coordinator:
             return
 
         if event.type == "live":
-            was_in_progress = self._weigh_in_in_progress
+            prev_active = (
+                self.state.live_weight_kg is not None and self.state.live_weight_kg > 0
+            )
             prev_stable = self.state.stable
-            if event.weight_kg is None or event.weight_kg <= 0:
-                self._awaiting_step_off = False
-                self._weigh_in_in_progress = False
-                self.state.live_weight_kg = event.weight_kg
-                self.state.stable = False
-            else:
-                if not self._awaiting_step_off:
-                    self._weigh_in_in_progress = True
-                self.state.live_weight_kg = event.weight_kg
-                self.state.stable = event.stable
-            if (
-                self._weigh_in_in_progress != was_in_progress
-                or self.state.stable != prev_stable
-            ):
+            self.state.live_weight_kg = event.weight_kg
+            self.state.stable = (
+                event.stable
+                if (event.weight_kg is not None and event.weight_kg > 0)
+                else False
+            )
+            now_active = (
+                self.state.live_weight_kg is not None and self.state.live_weight_kg > 0
+            )
+            if now_active != prev_active or self.state.stable != prev_stable:
                 _LOGGER.debug(
                     "Live measurement on %s: weight=%s kg, stable=%s",
                     self.address,
@@ -579,8 +536,6 @@ class S400Coordinator:
                     event,
                 )
                 return
-            self._weigh_in_in_progress = False
-            self._awaiting_step_off = True
             self.state.live_weight_kg = event.weight_kg
             self.state.final_weight_kg = event.weight_kg
             self.state.stable = True
