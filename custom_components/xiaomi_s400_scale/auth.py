@@ -26,7 +26,7 @@ from .protocol import (
     FrameSequenceError,
 )
 
-logger = logging.getLogger(__name__)
+_LOGGER = logging.getLogger(__name__)
 
 
 class AuthError(RuntimeError):
@@ -84,7 +84,7 @@ async def _wait(
 
 
 async def _write(client: BleakClient, uuid: str, data: bytes) -> None:
-    logger.debug("-> %s %s", uuid[:8], data.hex(" "))
+    _LOGGER.debug("-> %s %s", uuid[:8], data.hex(" "))
     await client.write_gatt_char(uuid, data, response=False)
 
 
@@ -99,7 +99,7 @@ async def _write_parcel(
         chunk = data[i : i + chunk_size]
         n = i // chunk_size + 1
         framed = bytes([n & 0xFF, (n >> 8) & 0xFF]) + chunk
-        logger.debug("-> %s parcel frame %d (%dB)", uuid[:8], n, len(chunk))
+        _LOGGER.debug("-> %s parcel frame %d (%dB)", uuid[:8], n, len(chunk))
         await client.write_gatt_char(uuid, framed, response=False)
         await asyncio.sleep(frame_delay)
 

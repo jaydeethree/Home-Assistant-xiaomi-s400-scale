@@ -28,6 +28,7 @@ from homeassistant.util import dt as dt_util
 
 from .auth import AuthError, BadTokenError, DisconnectedError, NotifyHub, login
 from .const import (
+    ACTIVE_ADVERTISEMENT_SECONDS,
     CMTP_FIRST_FRAME_TIMEOUT_SECONDS,
     CMTP_IDLE_TIMEOUT_SECONDS,
     IDLE_SESSION_COOLDOWN_SECONDS,
@@ -51,7 +52,7 @@ from .protocol import (
     parse_cmtp_payload,
 )
 
-logger = logging.getLogger(__name__)
+_LOGGER = logging.getLogger(__name__)
 
 type S400ConfigEntry = ConfigEntry[S400Coordinator]
 
@@ -105,7 +106,7 @@ class S400Coordinator:
         self._last_error: str | None = None
         self._last_connect_time: datetime | None = None
         self._cooldown_until_mono: float = 0.0
-        self._post_session_cooldown = False
+        self._idle_session_cooldown = False
 
     @property
     def auth_failed(self) -> bool:
@@ -155,6 +156,16 @@ class S400Coordinator:
             update_callback()
 
     @callback
+    def _async_get_ble_device(self, fallback: BLEDevice) -> BLEDevice:
+        """Return the BLEDevice from the best available scanner, or fallback."""
+        return (
+            bluetooth.async_ble_device_from_address(
+                self.hass, self.address, connectable=True
+            )
+            or fallback
+        )
+
+    @callback
     def async_start(self) -> None:
         """Start listening for BLE advertisements from the scale."""
         self._stopping = False
@@ -198,24 +209,18 @@ class S400Coordinator:
             return
         remaining = self.cooldown_remaining
         if remaining > 0:
-            # Schedule a retry only when recovering from a failed connection attempt,
-            # not while winding down after an authenticated session.
-            if not self._post_session_cooldown and self._cancel_cooldown_retry is None:
+            # Schedule an expiry check unless we just finished an idle session that
+            # received zero frames (which avoids an endless idle reconnect loop).
+            if not self._idle_session_cooldown and self._cancel_cooldown_retry is None:
                 self._cancel_cooldown_retry = async_call_later(
                     self.hass, remaining, self._async_cooldown_expired
                 )
             return
-        ble_device = (
-            bluetooth.async_ble_device_from_address(
-                self.hass, self.address, connectable=True
-            )
-            or service_info.device
-        )
-        self._schedule_connect(ble_device)
+        self._schedule_connect(self._async_get_ble_device(service_info.device))
 
     @callback
     def _async_cooldown_expired(self, _now: datetime) -> None:
-        """Retry connection after failure cooldown if the scale advertised recently."""
+        """Connect after cooldown if the scale is actively advertising right now."""
         self._cancel_cooldown_retry = None
         if self._stopping or self._auth_failed or self.connecting:
             return
@@ -224,16 +229,10 @@ class S400Coordinator:
         )
         if (
             service_info is None
-            or (time.monotonic() - service_info.time) > RECENT_ADVERTISEMENT_SECONDS
+            or (time.monotonic() - service_info.time) > ACTIVE_ADVERTISEMENT_SECONDS
         ):
             return
-        ble_device = (
-            bluetooth.async_ble_device_from_address(
-                self.hass, self.address, connectable=True
-            )
-            or service_info.device
-        )
-        self._schedule_connect(ble_device)
+        self._schedule_connect(self._async_get_ble_device(service_info.device))
 
     @callback
     def _schedule_connect(self, ble_device: BLEDevice) -> None:
@@ -253,9 +252,9 @@ class S400Coordinator:
         self._consecutive_failures += 1
         self._last_error = message
         log_fn = (
-            logger.warning
+            _LOGGER.warning
             if self._consecutive_failures == WARN_AFTER_CONSECUTIVE_FAILURES
-            else logger.debug
+            else _LOGGER.debug
         )
         log_fn(
             "BLE session failed on %s (attempt %d): %s",
@@ -274,19 +273,14 @@ class S400Coordinator:
         authenticated = False
         received_frames = False
         try:
-            logger.debug("Connecting to Xiaomi S400 Scale (%s)...", self.address)
+            _LOGGER.debug("Connecting to Xiaomi S400 Scale (%s)...", self.address)
             client = await establish_connection(
                 BleakClientWithServiceCache,
                 ble_device,
                 self.address,
                 disconnected_callback=_on_disconnect,
                 max_attempts=2,
-                ble_device_callback=lambda: (
-                    bluetooth.async_ble_device_from_address(
-                        self.hass, self.address, connectable=True
-                    )
-                    or ble_device
-                ),
+                ble_device_callback=lambda: self._async_get_ble_device(ble_device),
             )
             try:
                 for uuid in REQUIRED_NOTIFY_UUIDS:
@@ -300,19 +294,19 @@ class S400Coordinator:
                 try:
                     await client.start_notify(uuid, _ignore_optional_notify)
                 except (BleakError, TimeoutError, EOFError, OSError) as exc:
-                    logger.debug("Optional subscribe %s skipped: %s", uuid[:8], exc)
+                    _LOGGER.debug("Optional subscribe %s skipped: %s", uuid[:8], exc)
 
             await asyncio.sleep(SETTLE_DELAY_SECONDS)
             keys = await login(client, self.token, hub)
             authenticated = True
             if self._consecutive_failures >= WARN_AFTER_CONSECUTIVE_FAILURES:
-                logger.info(
+                _LOGGER.info(
                     "Connection to Xiaomi S400 Scale (%s) restored after %d failed attempts",
                     self.address,
                     self._consecutive_failures,
                 )
             else:
-                logger.debug("Authenticated with Xiaomi S400 Scale (%s)", self.address)
+                _LOGGER.debug("Authenticated with Xiaomi S400 Scale (%s)", self.address)
 
             self._consecutive_bad_tokens = 0
             self._consecutive_failures = 0
@@ -328,7 +322,7 @@ class S400Coordinator:
             self._consecutive_failures += 1
             self._last_error = str(exc)
             if self._consecutive_bad_tokens >= MAX_CONSECUTIVE_BAD_TOKENS:
-                logger.error(
+                _LOGGER.error(
                     "BLE login token rejected %d times in a row by scale %s (%s). Triggering reauth.",
                     self._consecutive_bad_tokens,
                     self.address,
@@ -338,7 +332,7 @@ class S400Coordinator:
                 self._async_notify_listeners()
                 self.entry.async_start_reauth(self.hass)
             else:
-                logger.warning(
+                _LOGGER.warning(
                     "BLE login HMAC mismatch on %s (%d/%d before reauth): %s",
                     self.address,
                     self._consecutive_bad_tokens,
@@ -347,7 +341,7 @@ class S400Coordinator:
                 )
         except DisconnectedError as exc:
             if authenticated:
-                logger.debug("BLE disconnected on %s: %s", self.address, exc)
+                _LOGGER.debug("BLE disconnected on %s: %s", self.address, exc)
             else:
                 self._record_failure(str(exc))
         except AuthError as exc:
@@ -356,22 +350,22 @@ class S400Coordinator:
             raise
         except BleakOutOfConnectionSlotsError as exc:
             if authenticated:
-                logger.debug("BLE session ended on %s: %s", self.address, exc)
+                _LOGGER.debug("BLE session ended on %s: %s", self.address, exc)
             else:
                 self._record_failure(
                     f"all Bluetooth adapter/proxy connection slots are in use: {exc}"
                 )
         except (BleakError, TimeoutError, EOFError, OSError) as exc:
             if authenticated:
-                logger.debug("BLE session ended on %s: %s", self.address, exc)
+                _LOGGER.debug("BLE session ended on %s: %s", self.address, exc)
             else:
                 self._record_failure(f"connection error: {exc}")
         except Exception as exc:
             if not authenticated:
                 self._record_failure(f"unexpected error: {exc}")
-            logger.exception("Unexpected error in BLE session on %s", self.address)
+            _LOGGER.exception("Unexpected error in BLE session on %s", self.address)
         finally:
-            self._post_session_cooldown = authenticated
+            self._idle_session_cooldown = authenticated and not received_frames
             if authenticated:
                 cooldown = (
                     POST_MEASUREMENT_COOLDOWN_SECONDS
@@ -388,7 +382,7 @@ class S400Coordinator:
                 try:
                     await client.disconnect()
                 except (BleakError, TimeoutError, EOFError, OSError) as exc:
-                    logger.debug("Disconnect cleanup error on %s: %s", self.address, exc)
+                    _LOGGER.debug("Disconnect cleanup error on %s: %s", self.address, exc)
             if (
                 self.state.connected
                 or self.state.stable
@@ -422,7 +416,7 @@ class S400Coordinator:
                 async with asyncio.timeout(timeout):
                     data = await q.get()
             except TimeoutError:
-                logger.debug(
+                _LOGGER.debug(
                     "CMTP stream idle for %ss on %s; ending session",
                     timeout,
                     self.address,
@@ -434,7 +428,7 @@ class S400Coordinator:
             try:
                 ack, msg = reassembler.feed(data)
             except FrameSequenceError as exc:
-                logger.debug("CMTP %s on %s; resetting buffer", exc, self.address)
+                _LOGGER.debug("CMTP %s on %s; resetting buffer", exc, self.address)
                 # Mi Home v2 has no NACK/retransmit opcode; RCV_OK unblocks the sender.
                 await client.write_gatt_char(CMTP, RCV_OK, response=False)
                 continue
@@ -450,11 +444,11 @@ class S400Coordinator:
         """Decrypt and process a reassembled CMTP payload. Returns True on valid final reading."""
         pt = decrypt_cmtp(keys, ciphertext)
         if pt is None:
-            logger.debug("CMTP decrypt failed on %s: %s", self.address, ciphertext.hex())
+            _LOGGER.debug("CMTP decrypt failed on %s: %s", self.address, ciphertext.hex())
             return False
         event = parse_cmtp_payload(pt)
         if event is None:
-            logger.debug("Unparsed CMTP payload on %s: %s", self.address, pt.hex())
+            _LOGGER.debug("Unparsed CMTP payload on %s: %s", self.address, pt.hex())
             return False
 
         if event.type == "live":
@@ -470,7 +464,7 @@ class S400Coordinator:
                 or event.weight_kg <= 0
                 or not event.stable
             ):
-                logger.debug(
+                _LOGGER.debug(
                     "Ignoring incomplete/unstable final frame on %s: %s",
                     self.address,
                     event,
