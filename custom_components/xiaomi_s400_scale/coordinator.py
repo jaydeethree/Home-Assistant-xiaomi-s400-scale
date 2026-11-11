@@ -384,7 +384,7 @@ class S400Coordinator:
         return None
 
     def _is_esphome_scanner(self, scanner: bluetooth.BaseHaScanner) -> bool:
-        """Return True if the scanner is an available ESPHome Bluetooth proxy."""
+        """Return True if the scanner belongs to an ESPHome Bluetooth proxy."""
         for obj in (scanner, getattr(scanner, "connector", None)):
             if obj is None:
                 continue
