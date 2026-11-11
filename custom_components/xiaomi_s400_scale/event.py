@@ -54,6 +54,11 @@ class S400MeasurementEventEntity(S400Entity, EventEntity):
                 "impedance_ohm": state.impedance_ohm,
                 "impedance_low_ohm": state.impedance_low_ohm,
                 "profile_id": state.profile_id,
+                "measured_at": (
+                    state.last_measurement.isoformat()
+                    if state.last_measurement is not None
+                    else None
+                ),
             },
         )
         self._last_state_key = self._get_state_key()

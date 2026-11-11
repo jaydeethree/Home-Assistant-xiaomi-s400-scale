@@ -208,6 +208,11 @@ async def test_entities_live_final_event_ordering_and_availability(
         assert event_state_1.attributes["impedance_ohm"] == 538.0
         assert event_state_1.attributes["impedance_low_ohm"] == 494.0
         assert event_state_1.attributes["profile_id"] == 1
+        assert coordinator.state.last_measurement is not None
+        assert (
+            event_state_1.attributes["measured_at"]
+            == coordinator.state.last_measurement.isoformat()
+        )
 
         # Repeat identical weight reading with a new device_timestamp must fire event again
         fields = ["0"] * FINAL_CSV_FIELD_COUNT
