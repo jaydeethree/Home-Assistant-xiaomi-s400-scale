@@ -38,9 +38,7 @@ async def async_get_config_entry_diagnostics(
     connectable_scanners = bluetooth.async_scanner_count(hass, connectable=True)
     service_info = bluetooth.async_last_service_info(
         hass, coordinator.address, connectable=True
-    ) or bluetooth.async_last_service_info(
-        hass, coordinator.address, connectable=False
-    )
+    ) or bluetooth.async_last_service_info(hass, coordinator.address, connectable=False)
     bt_info: dict[str, Any] | None = None
     if service_info is not None:
         mibeacon = service_info.service_data.get(MIBEACON_SERVICE_UUID)

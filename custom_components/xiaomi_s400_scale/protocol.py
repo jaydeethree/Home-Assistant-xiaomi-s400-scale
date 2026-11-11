@@ -6,11 +6,11 @@ from dataclasses import dataclass
 from typing import Literal
 
 # Auth service (0xFE95) characteristic UUIDs
-UPNP = "00000010-0000-1000-8000-00805f9b34fb"   # client -> device commands
+UPNP = "00000010-0000-1000-8000-00805f9b34fb"  # client -> device commands
 AVDTP = "00000019-0000-1000-8000-00805f9b34fb"  # bidirectional auth data
 
 # Encrypted command channel (post-login)
-CMTP = "0000001b-0000-1000-8000-00805f9b34fb"    # device -> app encrypted
+CMTP = "0000001b-0000-1000-8000-00805f9b34fb"  # device -> app encrypted
 
 # MiBeacon advertisement service
 MIBEACON_SERVICE_UUID = "0000fe95-0000-1000-8000-00805f9b34fb"

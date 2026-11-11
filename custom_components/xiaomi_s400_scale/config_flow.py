@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+import contextlib
 import logging
 import re
 from typing import Any
@@ -88,14 +89,14 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
         """Initialize the config flow."""
         self._discovery_info: BluetoothServiceInfoBleak | None = None
 
-    async def _async_validate_connection(self, address: str, token_hex: str) -> str | None:
+    async def _async_validate_connection(
+        self, address: str, token_hex: str
+    ) -> str | None:
         """Connect to the scale and verify the Mi Home v2 BLE login token.
 
         Returns None on success, or an error key ('cannot_connect', 'invalid_auth', or 'unknown').
         """
-        ble_device = async_ble_device_from_address(
-            self.hass, address, connectable=True
-        )
+        ble_device = async_ble_device_from_address(self.hass, address, connectable=True)
         if ble_device is None:
             return "cannot_connect"
 
@@ -135,14 +136,14 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             _LOGGER.debug("BLE connection test failed on %s: %s", address, exc)
             return "cannot_connect"
         except Exception:
-            _LOGGER.exception("Unexpected error validating BLE connection on %s", address)
+            _LOGGER.exception(
+                "Unexpected error validating BLE connection on %s", address
+            )
             return "unknown"
         finally:
             if client is not None and client.is_connected:
-                try:
+                with contextlib.suppress(BleakError, TimeoutError, EOFError, OSError):
                     await client.disconnect()
-                except (BleakError, TimeoutError, EOFError, OSError):
-                    pass
         return None
 
     async def async_step_bluetooth(
@@ -169,22 +170,22 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
         address = self._discovery_info.address.upper()
 
         default_name = (
-            self._discovery_info.name
-            or f"Xiaomi S400 Scale ({address[-5:]})"
+            self._discovery_info.name or f"Xiaomi S400 Scale ({address[-5:]})"
         )
 
-        if user_input is not None:
-            if token := _validate_token(user_input[CONF_TOKEN], errors):
-                if err := await self._async_validate_connection(address, token):
-                    errors[CONF_TOKEN if err == "invalid_auth" else "base"] = err
-                else:
-                    return self.async_create_entry(
-                        title=default_name,
-                        data={
-                            CONF_ADDRESS: address,
-                            CONF_TOKEN: token,
-                        },
-                    )
+        if user_input is not None and (
+            token := _validate_token(user_input[CONF_TOKEN], errors)
+        ):
+            if err := await self._async_validate_connection(address, token):
+                errors[CONF_TOKEN if err == "invalid_auth" else "base"] = err
+            else:
+                return self.async_create_entry(
+                    title=default_name,
+                    data={
+                        CONF_ADDRESS: address,
+                        CONF_TOKEN: token,
+                    },
+                )
 
         schema = vol.Schema(
             {
@@ -279,35 +280,36 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         address = entry.data[CONF_ADDRESS]
 
-        if user_input is not None:
-            if token := _validate_token(user_input[CONF_TOKEN], errors):
-                coordinator = (
-                    entry.runtime_data
-                    if entry.state is ConfigEntryState.LOADED
-                    and hasattr(entry, "runtime_data")
-                    else None
-                )
-                restart_coordinator = coordinator is not None
-                try:
-                    if coordinator is not None:
-                        await coordinator.async_stop()
-                    err = await self._async_validate_connection(address, token)
-                    if err is None:
-                        restart_coordinator = False
-                        return self.async_update_reload_and_abort(
-                            entry,
-                            data_updates={CONF_TOKEN: token},
-                        )
-                finally:
-                    if (
-                        restart_coordinator
-                        and coordinator is not None
-                        and entry.state is ConfigEntryState.LOADED
-                        and not self.hass.is_stopping
-                        and not coordinator.auth_failed
-                    ):
-                        coordinator.async_start()
-                errors[CONF_TOKEN if err == "invalid_auth" else "base"] = err
+        if user_input is not None and (
+            token := _validate_token(user_input[CONF_TOKEN], errors)
+        ):
+            coordinator = (
+                entry.runtime_data
+                if entry.state is ConfigEntryState.LOADED
+                and hasattr(entry, "runtime_data")
+                else None
+            )
+            restart_coordinator = coordinator is not None
+            try:
+                if coordinator is not None:
+                    await coordinator.async_stop()
+                err = await self._async_validate_connection(address, token)
+                if err is None:
+                    restart_coordinator = False
+                    return self.async_update_reload_and_abort(
+                        entry,
+                        data_updates={CONF_TOKEN: token},
+                    )
+            finally:
+                if (
+                    restart_coordinator
+                    and coordinator is not None
+                    and entry.state is ConfigEntryState.LOADED
+                    and not self.hass.is_stopping
+                    and not coordinator.auth_failed
+                ):
+                    coordinator.async_start()
+            errors[CONF_TOKEN if err == "invalid_auth" else "base"] = err
 
         schema = vol.Schema({vol.Required(CONF_TOKEN): TEXT_SELECTOR})
         suggested_values = (
