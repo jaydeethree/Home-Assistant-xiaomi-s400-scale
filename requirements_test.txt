@@ -1,6 +1,15 @@
+aiousbwatcher>=1.1.1
 bleak>=3.0.0
 bleak-retry-connector>=4.4.0
 bluetooth-adapters>=2.0.0
+bluetooth-auto-recovery>=1.5.0
+bluetooth-data-tools>=1.28.0
+dbus-fast>=3.0.0
 habluetooth>=5.0.0
 homeassistant>=2026.10.0
 mypy>=1.15.0
+pytest>=9.0.0
+pytest-cov>=6.0.0
+pytest-homeassistant-custom-component>=0.13.374
+ruff>=0.11.0
+serialx>=1.0.0
