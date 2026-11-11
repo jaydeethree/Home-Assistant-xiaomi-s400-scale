@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+import functools
 import logging
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from bleak.backends.characteristic import BleakGATTCharacteristic
-from bleak.exc import BleakCharacteristicNotFoundError
+from bleak.exc import BleakCharacteristicNotFoundError, BleakError
 from bleak_retry_connector import BleakOutOfConnectionSlotsError
+from habluetooth import Allocations
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -431,5 +434,247 @@ async def test_gatt_cache_clear_and_out_of_slots_backoff(
     coordinator._last_failure_mono = time.monotonic() - FAILURE_RESET_SECONDS - 10.0
     coordinator._record_failure("transient timeout")
     assert coordinator.consecutive_failures == 1
+
+    await coordinator.async_stop()
+
+
+async def test_graceful_shutdown_completes_disconnect_without_double_cancel(
+    hass: HomeAssistant,
+) -> None:
+    """Test HA shutdown double-cancel race does not abort client.disconnect() mid-flight."""
+    coordinator = await _create_coordinator(hass)
+    keys = make_session_keys()
+    connected_event = asyncio.Event()
+    disconnect_completed = False
+
+    client = MagicMock()
+    client.is_connected = True
+    client.start_notify = AsyncMock()
+
+    async def _slow_disconnect() -> None:
+        nonlocal disconnect_completed
+        await asyncio.sleep(0.05)
+        client.is_connected = False
+        disconnect_completed = True
+
+    client.disconnect = AsyncMock(side_effect=_slow_disconnect)
+    unsub = coordinator.async_add_listener(
+        lambda: connected_event.set() if coordinator.state.connected else None
+    )
+
+    with (
+        patch(
+            "custom_components.xiaomi_s400_scale.coordinator.establish_connection",
+            AsyncMock(return_value=client),
+        ),
+        patch(
+            "custom_components.xiaomi_s400_scale.coordinator.login",
+            AsyncMock(return_value=keys),
+        ),
+    ):
+        coordinator._schedule_connect(make_ble_device())
+        await connected_event.wait()
+        assert coordinator._active_task is not None
+
+        # Simulate HomeAssistant.async_stop(): background tasks are cancelled first,
+        # and EVENT_HOMEASSISTANT_STOP calls coordinator.async_stop() on the same tick.
+        coordinator._active_task.cancel("Home Assistant is stopping")
+        await coordinator.async_stop()
+
+    unsub()
+    assert disconnect_completed is True
+    client.disconnect.assert_awaited_once()
+    assert coordinator.last_disconnect_reason == "stopped"
+    assert coordinator.state.connected is False
+
+    # Also verify _async_disconnect_client handles TimeoutError and BleakError cleanly
+    hung_cancelled = False
+
+    async def _hung_disconnect() -> None:
+        nonlocal hung_cancelled
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            hung_cancelled = True
+            raise
+
+    hung_client = MagicMock()
+    hung_client.disconnect = AsyncMock(side_effect=_hung_disconnect)
+    with patch(
+        "custom_components.xiaomi_s400_scale.coordinator.DISCONNECT_TIMEOUT_SECONDS",
+        0.01,
+    ):
+        await coordinator._async_disconnect_client(hung_client)
+    assert hung_cancelled is True
+
+    err_client = MagicMock()
+    err_client.disconnect = AsyncMock(side_effect=BleakError("already disconnected"))
+    await coordinator._async_disconnect_client(err_client)
+
+
+async def test_orphaned_proxy_cleanup_via_scanner_connector_and_cooldown(
+    hass: HomeAssistant,
+) -> None:
+    """Test startup orphan cleanup via scanner.connector.client and cooldown rate-limiting."""
+    coordinator = await _create_coordinator(hass)
+    proxy_source = "AA:BB:CC:DD:EE:02"
+    expected_addr_int = int(TEST_ADDRESS.replace(":", ""), 16)
+
+    mock_api_client = MagicMock()
+    mock_api_client.bluetooth_device_disconnect = AsyncMock()
+
+    def _dummy_bleak_client(*args: object, **kwargs: object) -> None:
+        return None
+
+    scanner = MagicMock()
+    scanner.source = proxy_source
+    scanner.name = "esphome-proxy-living-room"
+    scanner.connectable = True
+    scanner.get_allocations.return_value = Allocations(
+        adapter=proxy_source,
+        slots=3,
+        free=2,
+        allocated=[TEST_ADDRESS],
+    )
+    scanner.connector = SimpleNamespace(
+        client=functools.partial(
+            _dummy_bleak_client,
+            client_data=SimpleNamespace(client=mock_api_client),
+        )
+    )
+
+    with (
+        patch(
+            "custom_components.xiaomi_s400_scale.coordinator.bluetooth.async_current_scanners",
+            return_value=[scanner],
+        ),
+        patch(
+            "custom_components.xiaomi_s400_scale.coordinator.bluetooth.async_clear_advertisement_history"
+        ) as mock_clear_adv,
+    ):
+        coordinator.async_start()
+        await hass.async_block_till_done()
+
+        mock_api_client.bluetooth_device_disconnect.assert_awaited_once_with(
+            expected_addr_int
+        )
+        mock_clear_adv.assert_called_once_with(hass, TEST_ADDRESS)
+
+        # Immediate cooldown poll must respect ORPHAN_DISCONNECT_COOLDOWN_SECONDS
+        coordinator._async_cooldown_expired(datetime.now(UTC))
+        await hass.async_block_till_done()
+        assert mock_api_client.bluetooth_device_disconnect.await_count == 1
+
+    await coordinator.async_stop()
+
+
+async def test_orphaned_proxy_esphome_entry_fallback_startup_probe_and_preconnect(
+    hass: HomeAssistant,
+) -> None:
+    """Test esphome entry fallback, startup unattributed probe, clean skip, errors, and pre-connect cleanup."""
+    coordinator = await _create_coordinator(hass)
+    proxy_source = "AA:BB:CC:DD:EE:03"
+    clean_source = "AA:BB:CC:DD:EE:04"
+    expected_addr_int = int(TEST_ADDRESS.replace(":", ""), 16)
+
+    mock_api_client = MagicMock()
+    mock_api_client.bluetooth_device_disconnect = AsyncMock(
+        side_effect=[OSError("socket busy"), None, None]
+    )
+
+    esphome_entry = MockConfigEntry(
+        domain="esphome",
+        unique_id="esphome_scale_proxy",
+        title="Scale Proxy",
+        data={},
+    )
+    esphome_entry.add_to_hass(hass)
+    esphome_entry.runtime_data = SimpleNamespace(
+        available=True,
+        device_info=SimpleNamespace(
+            bluetooth_mac_address=proxy_source,
+            mac_address="AA:BB:CC:DD:EE:00",
+        ),
+        client=mock_api_client,
+    )
+
+    # 1. Startup probe on proxy with allocations=None; clean & non-connectable scanners ignored
+    probe_scanner = SimpleNamespace(
+        source=proxy_source,
+        name="scale-proxy",
+        connectable=True,
+        connector=None,
+        get_allocations=MagicMock(return_value=None),
+    )
+
+    clean_scanner = SimpleNamespace(
+        source=clean_source,
+        name="clean-proxy",
+        connectable=True,
+        connector=None,
+        get_allocations=MagicMock(
+            return_value=Allocations(
+                adapter=clean_source,
+                slots=3,
+                free=3,
+                allocated=[],
+            )
+        ),
+    )
+
+    passive_scanner = SimpleNamespace(
+        source="AA:BB:CC:DD:EE:05",
+        name="passive-proxy",
+        connectable=False,
+    )
+
+    with (
+        patch.object(
+            hass.config_entries,
+            "async_loaded_entries",
+            side_effect=lambda domain: [esphome_entry] if domain == "esphome" else [],
+        ),
+        patch(
+            "custom_components.xiaomi_s400_scale.coordinator.bluetooth.async_current_scanners",
+            return_value=[probe_scanner, clean_scanner, passive_scanner],
+        ),
+        patch(
+            "custom_components.xiaomi_s400_scale.coordinator.bluetooth.async_clear_advertisement_history"
+        ) as mock_clear_adv,
+    ):
+        # First attempt fails with OSError -> does not mark probed or clear adv history
+        released = await coordinator._async_release_orphaned_proxy_sessions()
+        assert released is False
+        assert proxy_source not in coordinator._probed_startup_proxies
+        mock_clear_adv.assert_not_called()
+
+        # Expire per-proxy cooldown and retry -> succeeds and marks proxy probed
+        coordinator._last_orphan_disconnect_mono.clear()
+        released = await coordinator._async_release_orphaned_proxy_sessions()
+        assert released is True
+        assert proxy_source in coordinator._probed_startup_proxies
+        mock_clear_adv.assert_called_once_with(hass, TEST_ADDRESS)
+
+        # Subsequent startup check skips already-probed proxy when not explicitly allocated
+        coordinator._last_orphan_disconnect_mono.clear()
+        assert coordinator._find_orphaned_proxy_targets() == []
+
+        # 2. Explicitly allocated slot is released right before establish_connection
+        probe_scanner.get_allocations.return_value = Allocations(
+            adapter=proxy_source,
+            slots=3,
+            free=2,
+            allocated=[TEST_ADDRESS.lower()],
+        )
+        with patch(
+            "custom_components.xiaomi_s400_scale.coordinator.establish_connection",
+            AsyncMock(side_effect=AuthError("stop after pre-connect check")),
+        ):
+            await coordinator._async_connect_and_stream(make_ble_device())
+
+        assert mock_api_client.bluetooth_device_disconnect.await_count == 3
+        mock_api_client.bluetooth_device_disconnect.assert_awaited_with(
+            expected_addr_int
+        )
 
     await coordinator.async_stop()
