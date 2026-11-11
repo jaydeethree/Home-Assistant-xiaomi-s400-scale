@@ -1,0 +1,6 @@
+bleak>=3.0.0
+bleak-retry-connector>=4.4.0
+bluetooth-adapters>=2.0.0
+habluetooth>=5.0.0
+homeassistant>=2026.10.0
+mypy>=1.15.0

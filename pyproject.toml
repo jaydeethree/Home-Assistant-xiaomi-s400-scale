@@ -53,3 +53,14 @@ section-order = [
 
 [tool.ruff.lint.isort.sections]
 homeassistant = ["homeassistant"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+explicit_package_bases = true
+show_error_codes = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = "homeassistant.*"
+implicit_reexport = true

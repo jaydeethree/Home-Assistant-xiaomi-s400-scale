@@ -12,7 +12,7 @@ from typing import Any
 from bleak import BleakClient
 from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
-import voluptuous as vol
+import probatio as vol
 
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
