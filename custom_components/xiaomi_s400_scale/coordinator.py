@@ -7,8 +7,10 @@ from collections.abc import Callable
 import contextlib
 from dataclasses import dataclass
 from datetime import datetime
+import functools
 import logging
 import time
+from typing import Protocol, cast
 
 from bleak import BleakClient
 from bleak.backends.device import BLEDevice
@@ -28,11 +30,13 @@ from homeassistant.util import dt as dt_util
 
 from .auth import AuthError, BadTokenError, NotifyHub, login
 from .const import (
+    DISCONNECT_TIMEOUT_SECONDS,
     FAILURE_RESET_SECONDS,
     IDLE_WATCHDOG_SECONDS,
     LIVE_WEIGHT_RESET_SECONDS,
     MAX_OUT_OF_SLOTS_COOLDOWN_SECONDS,
     MAX_RECONNECT_COOLDOWN_SECONDS,
+    ORPHAN_DISCONNECT_COOLDOWN_SECONDS,
     RECENT_ADVERTISEMENT_SECONDS,
     RECONNECT_COOLDOWN_SECONDS,
     SETTLE_DELAY_SECONDS,
@@ -52,6 +56,21 @@ from .protocol import (
 _LOGGER = logging.getLogger(__name__)
 
 type S400ConfigEntry = ConfigEntry[S400Coordinator]
+
+
+class _ESPHomeAPIClient(Protocol):
+    """Protocol for aioesphomeapi.APIClient Bluetooth disconnect support."""
+
+    async def bluetooth_device_disconnect(self, address: int) -> None: ...
+
+
+type _OrphanProxyTarget = tuple[str, str, _ESPHomeAPIClient, bool]
+
+
+def _normalize_mac(address: str) -> str:
+    """Normalize a MAC address string to uppercase hex digits without separators."""
+    return address.replace(":", "").replace("-", "").upper()
+
 
 MAX_CONSECUTIVE_BAD_TOKENS = 3
 MAX_CONSECUTIVE_DECRYPT_FAILURES = 5
@@ -90,9 +109,14 @@ class S400Coordinator:
         self.token = token
         self.state = S400State()
 
+        self._address_norm = _normalize_mac(self.address)
+        self._address_int = int(self._address_norm, 16)
         self._listeners: list[Callable[[], None]] = []
         self._measurement_listeners: list[Callable[[], None]] = []
         self._active_task: asyncio.Task[None] | None = None
+        self._cleanup_task: asyncio.Task[None] | None = None
+        self._last_orphan_disconnect_mono: dict[str, float] = {}
+        self._probed_startup_proxies: set[str] = set()
         self._unsub_bluetooth: CALLBACK_TYPE | None = None
         self._unsub_started: CALLBACK_TYPE | None = None
         self._cancel_cooldown_retry: CALLBACK_TYPE | None = None
@@ -103,10 +127,10 @@ class S400Coordinator:
         self._consecutive_decrypt_failures = 0
         self._consecutive_failures = 0
         self._warned_failure_streak = False
-        self._last_failure_mono: float = 0.0
+        self._last_failure_mono: float | None = None
         self._last_error: str | None = None
         self._last_connect_time: datetime | None = None
-        self._cooldown_until_mono: float = 0.0
+        self._cooldown_until_mono: float | None = None
         self._total_sessions = 0
         self._last_session_duration_s: float | None = None
         self._longest_session_duration_s: float | None = None
@@ -126,6 +150,11 @@ class S400Coordinator:
         return self._active_task is not None and not self._active_task.done()
 
     @property
+    def _cleanup_active(self) -> bool:
+        """Return True if an orphaned proxy cleanup task is currently active."""
+        return self._cleanup_task is not None and not self._cleanup_task.done()
+
+    @property
     def consecutive_failures(self) -> int:
         """Return the number of consecutive connection/auth failures."""
         return self._consecutive_failures
@@ -143,6 +172,8 @@ class S400Coordinator:
     @property
     def cooldown_remaining(self) -> float:
         """Return seconds remaining in the current reconnect cooldown window."""
+        if self._cooldown_until_mono is None:
+            return 0.0
         return max(0.0, self._cooldown_until_mono - time.monotonic())
 
     @property
@@ -238,10 +269,14 @@ class S400Coordinator:
                 self._async_check_connectable_scanners,
             )
             if (
-                service_info := bluetooth.async_last_service_info(
-                    self.hass, self.address, connectable=True
+                not self._schedule_orphan_cleanup_if_needed()
+                and (
+                    service_info := bluetooth.async_last_service_info(
+                        self.hass, self.address, connectable=True
+                    )
                 )
-            ) is not None:
+                is not None
+            ):
                 self._async_on_advertisement(service_info)
             self._async_ensure_reconnect_timer()
 
@@ -288,16 +323,222 @@ class S400Coordinator:
         if self._unsub_bluetooth is not None:
             self._unsub_bluetooth()
             self._unsub_bluetooth = None
-        if self._active_task is not None and not self._active_task.done():
-            self._active_task.cancel()
-            try:
-                await self._active_task
-            except asyncio.CancelledError:
-                if (curr := asyncio.current_task()) is not None and curr.cancelling():
-                    raise
-            except Exception:
-                pass
+        for task in (self._cleanup_task, self._active_task):
+            if task is not None and not task.done():
+                if task.cancelling() == 0:
+                    task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    if (
+                        curr := asyncio.current_task()
+                    ) is not None and curr.cancelling():
+                        raise
+                except Exception:
+                    pass
+        self._cleanup_task = None
         self._active_task = None
+
+    def _get_esphome_api_client(
+        self, scanner: bluetooth.BaseHaScanner
+    ) -> _ESPHomeAPIClient | None:
+        """Resolve the underlying ESPHome APIClient for a remote Bluetooth proxy scanner."""
+        connector = getattr(scanner, "connector", None)
+        client_factory = getattr(connector, "client", None)
+        if isinstance(client_factory, functools.partial):
+            for candidate in (
+                client_factory.keywords.get("client_data"),
+                *client_factory.args,
+            ):
+                api_client = getattr(candidate, "client", None)
+                if callable(getattr(api_client, "bluetooth_device_disconnect", None)):
+                    return cast(_ESPHomeAPIClient, api_client)
+
+        for attr in ("_client_data", "client_data"):
+            client_data = getattr(scanner, attr, None)
+            api_client = getattr(client_data, "client", None)
+            if callable(getattr(api_client, "bluetooth_device_disconnect", None)):
+                return cast(_ESPHomeAPIClient, api_client)
+
+        source_norm = _normalize_mac(scanner.source)
+        for esphome_entry in self.hass.config_entries.async_loaded_entries("esphome"):
+            runtime_data = getattr(esphome_entry, "runtime_data", None)
+            if runtime_data is None or not getattr(runtime_data, "available", True):
+                continue
+            device_info = getattr(runtime_data, "device_info", None)
+            mac_candidates = (
+                esphome_entry.data.get("bluetooth_mac_address"),
+                getattr(device_info, "bluetooth_mac_address", None),
+                getattr(device_info, "mac_address", None),
+                esphome_entry.unique_id,
+            )
+            if any(
+                isinstance(mac, str) and _normalize_mac(mac) == source_norm
+                for mac in mac_candidates
+            ):
+                api_client = getattr(runtime_data, "client", None)
+                if callable(getattr(api_client, "bluetooth_device_disconnect", None)):
+                    return cast(_ESPHomeAPIClient, api_client)
+
+        return None
+
+    def _find_orphaned_proxy_targets(self) -> list[_OrphanProxyTarget]:
+        """Find ESPHome proxies holding an orphaned BLE connection to this scale."""
+        try:
+            scanners = bluetooth.async_current_scanners(self.hass)
+        except RuntimeError:
+            return []
+
+        has_fresh_adv = False
+        with contextlib.suppress(RuntimeError):
+            if (
+                last_info := bluetooth.async_last_service_info(
+                    self.hass, self.address, connectable=True
+                )
+            ) is not None and (
+                bluetooth.MONOTONIC_TIME() - last_info.time
+            ) <= RECENT_ADVERTISEMENT_SECONDS:
+                has_fresh_adv = True
+
+        now_mono = time.monotonic()
+        targets: list[_OrphanProxyTarget] = []
+        for scanner in scanners:
+            if not scanner.connectable:
+                continue
+            last_attempt = self._last_orphan_disconnect_mono.get(scanner.source)
+            if (
+                last_attempt is not None
+                and (now_mono - last_attempt) < ORPHAN_DISCONNECT_COOLDOWN_SECONDS
+            ):
+                continue
+
+            allocations = scanner.get_allocations()
+            explicitly_allocated = allocations is not None and any(
+                _normalize_mac(addr) == self._address_norm
+                for addr in allocations.allocated
+            )
+            startup_unattributed_slot = (
+                self._total_sessions == 0
+                and not has_fresh_adv
+                and scanner.source not in self._probed_startup_proxies
+                and (
+                    allocations is None
+                    or (
+                        allocations.free < allocations.slots
+                        and not allocations.allocated
+                    )
+                )
+            )
+            if not explicitly_allocated and not startup_unattributed_slot:
+                continue
+
+            api_client = self._get_esphome_api_client(scanner)
+            if api_client is None:
+                continue
+
+            targets.append(
+                (
+                    scanner.source,
+                    scanner.name,
+                    api_client,
+                    startup_unattributed_slot and not explicitly_allocated,
+                )
+            )
+        return targets
+
+    async def _async_release_orphaned_proxy_sessions(
+        self, targets: list[_OrphanProxyTarget] | None = None
+    ) -> bool:
+        """Disconnect any orphaned BLE connection to this scale held by an ESPHome proxy."""
+        resolved = self._find_orphaned_proxy_targets() if targets is None else targets
+        if not resolved:
+            return False
+
+        released = False
+        for source, name, api_client, is_startup_probe in resolved:
+            self._last_orphan_disconnect_mono[source] = time.monotonic()
+            if is_startup_probe:
+                _LOGGER.debug(
+                    "Probing proxy %s (%s) to clear any orphaned BLE session for %s",
+                    name,
+                    source,
+                    self.address,
+                )
+            else:
+                _LOGGER.info(
+                    "Releasing orphaned BLE connection to %s on proxy %s (%s)",
+                    self.address,
+                    name,
+                    source,
+                )
+            try:
+                async with asyncio.timeout(DISCONNECT_TIMEOUT_SECONDS):
+                    await api_client.bluetooth_device_disconnect(self._address_int)
+                if is_startup_probe:
+                    self._probed_startup_proxies.add(source)
+                released = True
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                _LOGGER.debug(
+                    "Failed to release orphaned BLE connection to %s on proxy %s (%s): %s",
+                    self.address,
+                    name,
+                    source,
+                    exc,
+                )
+
+        if released:
+            with contextlib.suppress(RuntimeError):
+                bluetooth.async_clear_advertisement_history(self.hass, self.address)
+        return released
+
+    @callback
+    def _schedule_orphan_cleanup_if_needed(self) -> bool:
+        """Schedule background cleanup if any proxy holds an orphaned connection while idle."""
+        if (
+            self._stopping
+            or self.hass.is_stopping
+            or self._auth_failed
+            or self.session_active
+            or self._cleanup_active
+        ):
+            return False
+        targets = self._find_orphaned_proxy_targets()
+        if not targets:
+            return False
+        self._cleanup_task = self.entry.async_create_background_task(
+            self.hass,
+            self._async_run_orphan_cleanup(targets),
+            name=f"xiaomi_s400_scale_cleanup_{self.address}",
+        )
+        return True
+
+    async def _async_run_orphan_cleanup(
+        self, targets: list[_OrphanProxyTarget]
+    ) -> None:
+        """Run orphaned proxy cleanup and resume advertisement checks once settled."""
+        try:
+            if await self._async_release_orphaned_proxy_sessions(targets):
+                await asyncio.sleep(SETTLE_DELAY_SECONDS)
+        finally:
+            if self._cleanup_task is asyncio.current_task():
+                self._cleanup_task = None
+        if (
+            self._stopping
+            or self.hass.is_stopping
+            or self._auth_failed
+            or self.session_active
+        ):
+            return
+        with contextlib.suppress(RuntimeError):
+            if (
+                service_info := bluetooth.async_last_service_info(
+                    self.hass, self.address, connectable=True
+                )
+            ) is not None:
+                self._async_on_advertisement(service_info)
+        self._async_ensure_reconnect_timer()
 
     @callback
     def _async_on_advertisement(
@@ -310,6 +551,7 @@ class S400Coordinator:
             or self.hass.is_stopping
             or self._auth_failed
             or self.session_active
+            or self._cleanup_active
         ):
             return
 
@@ -366,12 +608,18 @@ class S400Coordinator:
     @callback
     def _async_cooldown_expired(self, _now: datetime) -> None:
         """Reconnect after cooldown if the scale was seen recently, or re-arm while idle."""
-        self._cancel_cooldown_retry = None
+        if self._cancel_cooldown_retry is not None:
+            self._cancel_cooldown_retry()
+            self._cancel_cooldown_retry = None
         if (
-            service_info := bluetooth.async_last_service_info(
-                self.hass, self.address, connectable=True
+            not self._schedule_orphan_cleanup_if_needed()
+            and (
+                service_info := bluetooth.async_last_service_info(
+                    self.hass, self.address, connectable=True
+                )
             )
-        ) is not None:
+            is not None
+        ):
             self._async_on_advertisement(service_info)
         self._async_ensure_reconnect_timer()
 
@@ -392,7 +640,7 @@ class S400Coordinator:
         """Reset the failure streak if the last failure was more than FAILURE_RESET_SECONDS ago."""
         now_mono = time.monotonic()
         if (
-            self._last_failure_mono > 0
+            self._last_failure_mono is not None
             and (now_mono - self._last_failure_mono) > FAILURE_RESET_SECONDS
         ):
             self._consecutive_failures = 0
@@ -419,6 +667,30 @@ class S400Coordinator:
             message,
         )
 
+    async def _async_disconnect_client(self, client: BleakClient) -> None:
+        """Disconnect the Bleak client, shielded from task cancellation so proxies release the slot."""
+        disconnect_task = self.hass.async_create_task(
+            client.disconnect(),
+            name=f"xiaomi_s400_scale_disconnect_{self.address}",
+        )
+        try:
+            async with asyncio.timeout(DISCONNECT_TIMEOUT_SECONDS):
+                await asyncio.shield(disconnect_task)
+        except TimeoutError:
+            disconnect_task.cancel()
+            with contextlib.suppress(
+                BleakError, TimeoutError, EOFError, OSError, asyncio.CancelledError
+            ):
+                await disconnect_task
+            _LOGGER.debug("Disconnect timed out on %s", self.address)
+        except (BleakError, EOFError, OSError) as exc:
+            _LOGGER.debug("Disconnect cleanup error on %s: %s", self.address, exc)
+        except asyncio.CancelledError:
+            disconnect_task.add_done_callback(
+                lambda t: t.exception() if not t.cancelled() else None
+            )
+            raise
+
     async def _async_connect_and_stream(self, ble_device: BLEDevice) -> None:
         hub: NotifyHub | None = None
 
@@ -433,6 +705,8 @@ class S400Coordinator:
         disconnect_reason = "remote_disconnect"
         self._consecutive_decrypt_failures = 0
         try:
+            if await self._async_release_orphaned_proxy_sessions():
+                await asyncio.sleep(SETTLE_DELAY_SECONDS)
             _LOGGER.debug("Connecting to Xiaomi S400 Scale (%s)...", self.address)
             client = await establish_connection(
                 BleakClientWithServiceCache,
@@ -475,7 +749,7 @@ class S400Coordinator:
             self._consecutive_bad_tokens = 0
             self._consecutive_failures = 0
             self._warned_failure_streak = False
-            self._last_failure_mono = 0.0
+            self._last_failure_mono = None
             self._last_error = None
             self._last_connect_time = dt_util.utcnow()
             self.state.connected = True
@@ -544,12 +818,7 @@ class S400Coordinator:
                     self._longest_session_duration_s = duration
                 self._last_disconnect_reason = disconnect_reason
             if client is not None and client.is_connected:
-                try:
-                    await client.disconnect()
-                except (BleakError, TimeoutError, EOFError, OSError) as exc:
-                    _LOGGER.debug(
-                        "Disconnect cleanup error on %s: %s", self.address, exc
-                    )
+                await self._async_disconnect_client(client)
             if self._active_task is asyncio.current_task():
                 self._active_task = None
             if authenticated and self._consecutive_failures == 0:
