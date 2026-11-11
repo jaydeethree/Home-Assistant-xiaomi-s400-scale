@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import contextlib
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -135,12 +136,10 @@ class S400SensorEntity(S400Entity, RestoreSensor):
                 last_sensor_data is not None
                 and last_sensor_data.native_value is not None
             ):
-                try:
+                with contextlib.suppress(TypeError, ValueError):
                     self.entity_description.restore_fn(
                         self.coordinator.state, last_sensor_data.native_value
                     )
-                except (TypeError, ValueError):
-                    pass
 
         await super().async_added_to_hass()
 

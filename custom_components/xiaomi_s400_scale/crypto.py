@@ -59,5 +59,5 @@ def decrypt_cmtp(keys: SessionKeys, raw: bytes) -> bytes | None:
         ct = raw[2:]
         nonce = keys.dev_iv + bytes(4) + it + bytes(2)
         return keys.dev_cipher.decrypt(nonce, ct, None)
-    except (InvalidTag, ValueError):
+    except InvalidTag, ValueError:
         return None

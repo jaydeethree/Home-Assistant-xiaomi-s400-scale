@@ -166,7 +166,9 @@ class S400Coordinator:
         return self._last_disconnect_reason
 
     @callback
-    def async_add_listener(self, update_callback: Callable[[], None]) -> Callable[[], None]:
+    def async_add_listener(
+        self, update_callback: Callable[[], None]
+    ) -> Callable[[], None]:
         """Listen for state updates."""
         self._listeners.append(update_callback)
 
@@ -253,9 +255,7 @@ class S400Coordinator:
         self._unsub_bluetooth = bluetooth.async_register_callback(
             self.hass,
             _on_bluetooth_event,
-            bluetooth.BluetoothCallbackMatcher(
-                address=self.address, connectable=True
-            ),
+            bluetooth.BluetoothCallbackMatcher(address=self.address, connectable=True),
             bluetooth.BluetoothScanningMode.PASSIVE,
         )
         self._unsub_started = async_at_started(self.hass, _on_started)
@@ -313,7 +313,9 @@ class S400Coordinator:
         ):
             return
 
-        if (bluetooth.MONOTONIC_TIME() - service_info.time) > RECENT_ADVERTISEMENT_SECONDS:
+        if (
+            bluetooth.MONOTONIC_TIME() - service_info.time
+        ) > RECENT_ADVERTISEMENT_SECONDS:
             return
 
         if service_info.connectable:
@@ -545,7 +547,9 @@ class S400Coordinator:
                 try:
                     await client.disconnect()
                 except (BleakError, TimeoutError, EOFError, OSError) as exc:
-                    _LOGGER.debug("Disconnect cleanup error on %s: %s", self.address, exc)
+                    _LOGGER.debug(
+                        "Disconnect cleanup error on %s: %s", self.address, exc
+                    )
             if self._active_task is asyncio.current_task():
                 self._active_task = None
             if authenticated and self._consecutive_failures == 0:
@@ -594,13 +598,9 @@ class S400Coordinator:
         q = hub.queue(CMTP)
         reassembler = ParcelReassembler()
         while True:
-            has_live_state = (
-                self.state.live_weight_kg is not None or self.state.stable
-            )
+            has_live_state = self.state.live_weight_kg is not None or self.state.stable
             timeout = (
-                LIVE_WEIGHT_RESET_SECONDS
-                if has_live_state
-                else IDLE_WATCHDOG_SECONDS
+                LIVE_WEIGHT_RESET_SECONDS if has_live_state else IDLE_WATCHDOG_SECONDS
             )
             try:
                 async with asyncio.timeout(timeout):
