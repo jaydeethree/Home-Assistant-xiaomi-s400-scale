@@ -96,20 +96,41 @@ async def test_bluetooth_discovery_by_product_id(
 async def test_bluetooth_discovery_by_name_and_unsupported_abort(
     hass: HomeAssistant,
 ) -> None:
-    """Test discovery by S400 name and abort on unsupported BLE devices."""
-    unsupported = make_service_info(
-        name="Xiaomi Thermometer",
+    """Test discovery by MiBeacon + Scale S400 name and abort on unrelated BLE devices."""
+    for unsupported in (
+        make_service_info(
+            address="AA:BB:CC:00:00:01",
+            name="Xiaomi Thermometer",
+            service_data={MIBEACON_SERVICE_UUID: OTHER_MIBEACON_BYTES},
+        ),
+        make_service_info(
+            address="AA:BB:CC:00:00:02",
+            name="Speaker S400",
+            service_data={},
+        ),
+        make_service_info(
+            address="AA:BB:CC:00:00:03",
+            name="Scale S400 Without MiBeacon",
+            service_data={},
+        ),
+        make_service_info(
+            address="AA:BB:CC:00:00:04",
+            name="Xiaomi Vacuum S400",
+            service_data={MIBEACON_SERVICE_UUID: OTHER_MIBEACON_BYTES},
+        ),
+    ):
+        res_abort = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": config_entries.SOURCE_BLUETOOTH},
+            data=unsupported,
+        )
+        assert res_abort["type"] is FlowResultType.ABORT
+        assert res_abort["reason"] == "not_supported"
+
+    by_name = make_service_info(
+        name=TEST_NAME,
         service_data={MIBEACON_SERVICE_UUID: OTHER_MIBEACON_BYTES},
     )
-    res_abort = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": config_entries.SOURCE_BLUETOOTH},
-        data=unsupported,
-    )
-    assert res_abort["type"] is FlowResultType.ABORT
-    assert res_abort["reason"] == "not_supported"
-
-    by_name = make_service_info(name=TEST_NAME, service_data={})
     res_ok = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_BLUETOOTH},
