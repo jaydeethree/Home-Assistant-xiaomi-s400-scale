@@ -12,7 +12,7 @@ from typing import Any
 from bleak import BleakClient
 from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
-import probatio as vol
+import probatio
 
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
@@ -192,9 +192,9 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                     },
                 )
 
-        schema = vol.Schema(
+        schema = probatio.Schema(
             {
-                vol.Required(CONF_TOKEN): TEXT_SELECTOR,
+                probatio.Required(CONF_TOKEN): TEXT_SELECTOR,
             }
         )
         return self.async_show_form(
@@ -262,10 +262,10 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
             else TEXT_SELECTOR
         )
 
-        schema = vol.Schema(
+        schema = probatio.Schema(
             {
-                vol.Required(CONF_ADDRESS): address_selector,
-                vol.Required(CONF_TOKEN): TEXT_SELECTOR,
+                probatio.Required(CONF_ADDRESS): address_selector,
+                probatio.Required(CONF_TOKEN): TEXT_SELECTOR,
             }
         )
         return self.async_show_form(
@@ -316,7 +316,7 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
                     coordinator.async_start()
             errors[CONF_TOKEN if err == "invalid_auth" else "base"] = err
 
-        schema = vol.Schema({vol.Required(CONF_TOKEN): TEXT_SELECTOR})
+        schema = probatio.Schema({probatio.Required(CONF_TOKEN): TEXT_SELECTOR})
         suggested_values = (
             user_input
             if user_input is not None
