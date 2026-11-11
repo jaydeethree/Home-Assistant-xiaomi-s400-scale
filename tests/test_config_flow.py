@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from bleak.exc import BleakError
@@ -427,3 +428,57 @@ async def test_reauth_flow_with_halted_coordinator(hass: HomeAssistant) -> None:
     assert result2["reason"] == "reauth_successful"
     assert entry.data[CONF_TOKEN] == NEW_TOKEN_HEX
     assert entry.runtime_data.auth_failed is False
+
+
+async def test_validate_connection_disconnect_timeout(hass: HomeAssistant) -> None:
+    """Test a hung client.disconnect() during config flow validation times out cleanly."""
+    hung_cancelled = False
+
+    async def _hung_disconnect() -> None:
+        nonlocal hung_cancelled
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            hung_cancelled = True
+            raise
+
+    hung_client = _make_mock_client(connected=True)
+    hung_client.disconnect = AsyncMock(side_effect=_hung_disconnect)
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": config_entries.SOURCE_BLUETOOTH},
+        data=make_service_info(),
+    )
+    assert result["type"] is FlowResultType.FORM
+
+    with (
+        patch(
+            "custom_components.xiaomi_s400_scale.config_flow.DISCONNECT_TIMEOUT_SECONDS",
+            0.01,
+        ),
+        patch(
+            "custom_components.xiaomi_s400_scale.config_flow.async_ble_device_from_address",
+            return_value=make_ble_device(),
+        ),
+        patch(
+            "custom_components.xiaomi_s400_scale.config_flow.establish_connection",
+            AsyncMock(return_value=hung_client),
+        ),
+        patch(
+            "custom_components.xiaomi_s400_scale.config_flow.login",
+            AsyncMock(return_value=make_session_keys()),
+        ),
+        patch(
+            "custom_components.xiaomi_s400_scale.async_setup_entry",
+            AsyncMock(return_value=True),
+        ),
+    ):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_TOKEN: TEST_TOKEN_HEX},
+        )
+        await hass.async_block_till_done()
+
+    assert result2["type"] is FlowResultType.CREATE_ENTRY
+    assert hung_cancelled is True

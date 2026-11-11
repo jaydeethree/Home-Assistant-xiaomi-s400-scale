@@ -38,7 +38,12 @@ from homeassistant.helpers.selector import (
 )
 
 from .auth import AuthError, BadTokenError, NotifyHub, login
-from .const import DOMAIN, S400_PRODUCT_IDS, SETTLE_DELAY_SECONDS
+from .const import (
+    DISCONNECT_TIMEOUT_SECONDS,
+    DOMAIN,
+    S400_PRODUCT_IDS,
+    SETTLE_DELAY_SECONDS,
+)
 from .protocol import AVDTP, MIBEACON_SERVICE_UUID, UPNP
 
 _LOGGER = logging.getLogger(__name__)
@@ -143,7 +148,8 @@ class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
         finally:
             if client is not None and client.is_connected:
                 with contextlib.suppress(BleakError, TimeoutError, EOFError, OSError):
-                    await client.disconnect()
+                    async with asyncio.timeout(DISCONNECT_TIMEOUT_SECONDS):
+                        await client.disconnect()
         return None
 
     async def async_step_bluetooth(
