@@ -127,10 +127,10 @@ class S400Coordinator:
         self._consecutive_decrypt_failures = 0
         self._consecutive_failures = 0
         self._warned_failure_streak = False
-        self._last_failure_mono: float = 0.0
+        self._last_failure_mono: float | None = None
         self._last_error: str | None = None
         self._last_connect_time: datetime | None = None
-        self._cooldown_until_mono: float = 0.0
+        self._cooldown_until_mono: float | None = None
         self._total_sessions = 0
         self._last_session_duration_s: float | None = None
         self._longest_session_duration_s: float | None = None
@@ -172,6 +172,8 @@ class S400Coordinator:
     @property
     def cooldown_remaining(self) -> float:
         """Return seconds remaining in the current reconnect cooldown window."""
+        if self._cooldown_until_mono is None:
+            return 0.0
         return max(0.0, self._cooldown_until_mono - time.monotonic())
 
     @property
@@ -403,9 +405,9 @@ class S400Coordinator:
         for scanner in scanners:
             if not scanner.connectable:
                 continue
-            last_attempt = self._last_orphan_disconnect_mono.get(scanner.source, 0.0)
+            last_attempt = self._last_orphan_disconnect_mono.get(scanner.source)
             if (
-                last_attempt > 0
+                last_attempt is not None
                 and (now_mono - last_attempt) < ORPHAN_DISCONNECT_COOLDOWN_SECONDS
             ):
                 continue
@@ -638,7 +640,7 @@ class S400Coordinator:
         """Reset the failure streak if the last failure was more than FAILURE_RESET_SECONDS ago."""
         now_mono = time.monotonic()
         if (
-            self._last_failure_mono > 0
+            self._last_failure_mono is not None
             and (now_mono - self._last_failure_mono) > FAILURE_RESET_SECONDS
         ):
             self._consecutive_failures = 0
@@ -747,7 +749,7 @@ class S400Coordinator:
             self._consecutive_bad_tokens = 0
             self._consecutive_failures = 0
             self._warned_failure_streak = False
-            self._last_failure_mono = 0.0
+            self._last_failure_mono = None
             self._last_error = None
             self._last_connect_time = dt_util.utcnow()
             self.state.connected = True

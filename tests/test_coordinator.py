@@ -18,8 +18,8 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from homeassistant.components import bluetooth
-from homeassistant.const import CONF_ADDRESS, CONF_TOKEN
-from homeassistant.core import HomeAssistant
+from homeassistant.const import CONF_ADDRESS, CONF_TOKEN, EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import Event, HomeAssistant
 
 from custom_components.xiaomi_s400_scale.auth import AuthError, BadTokenError
 from custom_components.xiaomi_s400_scale.const import (
@@ -57,6 +57,11 @@ async def _create_coordinator(hass: HomeAssistant) -> S400Coordinator:
     entry.add_to_hass(hass)
     coordinator = S400Coordinator(hass, entry, TEST_ADDRESS, TEST_TOKEN_BYTES)
     entry.runtime_data = coordinator
+
+    async def _async_handle_stop(_event: Event) -> None:
+        await coordinator.async_stop()
+
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_handle_stop)
     return coordinator
 
 
@@ -103,7 +108,7 @@ async def test_advertisement_staleness_connectability_and_cooldown(
         # 5. Cooldown expiry checks async_last_service_info and connects
         coordinator._cancel_cooldown_retry()
         coordinator._cancel_cooldown_retry = None
-        coordinator._cooldown_until_mono = 0.0
+        coordinator._cooldown_until_mono = None
         with patch(
             "custom_components.xiaomi_s400_scale.coordinator.bluetooth.async_last_service_info",
             return_value=fresh_conn,
@@ -430,9 +435,14 @@ async def test_gatt_cache_clear_and_out_of_slots_backoff(
     assert coordinator.cooldown_remaining > MAX_RECONNECT_COOLDOWN_SECONDS
     assert coordinator.cooldown_remaining <= MAX_OUT_OF_SLOTS_COOLDOWN_SECONDS
 
-    # 3. Failure streak decays if last failure was older than FAILURE_RESET_SECONDS
-    coordinator._last_failure_mono = time.monotonic() - FAILURE_RESET_SECONDS - 10.0
-    coordinator._record_failure("transient timeout")
+    # 3. Failure streak decays if last failure was older than FAILURE_RESET_SECONDS,
+    # even on freshly booted CI VMs where time.monotonic() < FAILURE_RESET_SECONDS.
+    with patch(
+        "custom_components.xiaomi_s400_scale.coordinator.time.monotonic",
+        return_value=45.0,
+    ):
+        coordinator._last_failure_mono = 45.0 - FAILURE_RESET_SECONDS - 10.0
+        coordinator._record_failure("transient timeout")
     assert coordinator.consecutive_failures == 1
 
     await coordinator.async_stop()
