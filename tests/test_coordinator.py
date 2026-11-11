@@ -497,11 +497,14 @@ async def test_graceful_shutdown_completes_disconnect_without_double_cancel(
     assert coordinator.last_disconnect_reason == "stopped"
     assert coordinator.state.connected is False
 
-    # Also verify _async_disconnect_client handles TimeoutError and BleakError cleanly
+    # Also verify _async_disconnect_client handles TimeoutError (both normally and when
+    # the outer caller cancels the shielded wait) and BleakError cleanly.
+    hung_started = asyncio.Event()
     hung_cancelled = False
 
     async def _hung_disconnect() -> None:
         nonlocal hung_cancelled
+        hung_started.set()
         try:
             await asyncio.Future()
         except asyncio.CancelledError:
@@ -512,10 +515,23 @@ async def test_graceful_shutdown_completes_disconnect_without_double_cancel(
     hung_client.disconnect = AsyncMock(side_effect=_hung_disconnect)
     with patch(
         "custom_components.xiaomi_s400_scale.coordinator.DISCONNECT_TIMEOUT_SECONDS",
-        0.01,
+        0.02,
     ):
         await coordinator._async_disconnect_client(hung_client)
-    assert hung_cancelled is True
+        assert hung_cancelled is True
+
+        # Cancel the outer _async_disconnect_client task; inner task must still time out
+        hung_started.clear()
+        hung_cancelled = False
+        outer_task = asyncio.create_task(
+            coordinator._async_disconnect_client(hung_client)
+        )
+        await hung_started.wait()
+        outer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await outer_task
+        await hass.async_block_till_done()
+        assert hung_cancelled is True
 
     err_client = MagicMock()
     err_client.disconnect = AsyncMock(side_effect=BleakError("already disconnected"))
