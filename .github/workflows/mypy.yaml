@@ -33,4 +33,4 @@ jobs:
         run: python -m pip install -r requirements_test.txt
 
       - name: Run Mypy
-        run: mypy custom_components
+        run: mypy custom_components tests

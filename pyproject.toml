@@ -6,6 +6,22 @@ readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.14"
 
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["custom_components.xiaomi_s400_scale"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
 [tool.ruff]
 target-version = "py314"
 line-length = 88
@@ -41,7 +57,7 @@ ignore = [
 force-sort-within-sections = true
 combine-as-imports = true
 split-on-trailing-comma = false
-known-first-party = ["custom_components"]
+known-first-party = ["custom_components", "tests"]
 section-order = [
     "future",
     "standard-library",
@@ -64,3 +80,11 @@ warn_unreachable = true
 [[tool.mypy.overrides]]
 module = "homeassistant.*"
 implicit_reexport = true
+
+[[tool.mypy.overrides]]
+module = "pytest_homeassistant_custom_component.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+warn_unreachable = false
