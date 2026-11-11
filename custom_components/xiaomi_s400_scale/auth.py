@@ -9,6 +9,7 @@ import logging
 import secrets
 
 from bleak import BleakClient
+from bleak.backends.characteristic import BleakGATTCharacteristic
 
 from .crypto import SessionKeys, derive_login_keys, hmac_sha256
 from .protocol import (
@@ -67,10 +68,12 @@ class NotifyHub:
         for q in self.queues.values():
             q.put_nowait(None)
 
-    def make_callback(self, uuid: str) -> Callable[[int, bytearray], None]:
+    def make_callback(
+        self, uuid: str
+    ) -> Callable[[BleakGATTCharacteristic, bytearray], None]:
         self.queue(uuid)
 
-        def cb(_handle: int, data: bytearray) -> None:
+        def cb(_char: BleakGATTCharacteristic, data: bytearray) -> None:
             if (q := self.queues.get(uuid)) is not None:
                 q.put_nowait(bytes(data))
 
