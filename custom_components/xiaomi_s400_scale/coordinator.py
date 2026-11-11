@@ -669,22 +669,22 @@ class S400Coordinator:
 
     async def _async_disconnect_client(self, client: BleakClient) -> None:
         """Disconnect the Bleak client, shielded from task cancellation so proxies release the slot."""
+
+        async def _disconnect() -> None:
+            try:
+                async with asyncio.timeout(DISCONNECT_TIMEOUT_SECONDS):
+                    await client.disconnect()
+            except TimeoutError:
+                _LOGGER.debug("Disconnect timed out on %s", self.address)
+            except (BleakError, EOFError, OSError) as exc:
+                _LOGGER.debug("Disconnect cleanup error on %s: %s", self.address, exc)
+
         disconnect_task = self.hass.async_create_task(
-            client.disconnect(),
+            _disconnect(),
             name=f"xiaomi_s400_scale_disconnect_{self.address}",
         )
         try:
-            async with asyncio.timeout(DISCONNECT_TIMEOUT_SECONDS):
-                await asyncio.shield(disconnect_task)
-        except TimeoutError:
-            disconnect_task.cancel()
-            with contextlib.suppress(
-                BleakError, TimeoutError, EOFError, OSError, asyncio.CancelledError
-            ):
-                await disconnect_task
-            _LOGGER.debug("Disconnect timed out on %s", self.address)
-        except (BleakError, EOFError, OSError) as exc:
-            _LOGGER.debug("Disconnect cleanup error on %s: %s", self.address, exc)
+            await asyncio.shield(disconnect_task)
         except asyncio.CancelledError:
             disconnect_task.add_done_callback(
                 lambda t: t.exception() if not t.cancelled() else None
