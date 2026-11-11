@@ -704,3 +704,53 @@ async def test_orphaned_proxy_esphome_entry_fallback_startup_probe_and_preconnec
         )
 
     await coordinator.async_stop()
+
+
+async def test_unresolved_esphome_proxy_logs_warning_once_and_skips_local_adapter(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test warning is logged once if an ESPHome proxy client cannot be resolved, ignoring local adapters."""
+    coordinator = await _create_coordinator(hass)
+
+    class FakeESPHomeScanner:
+        source = "AA:BB:CC:DD:EE:06"
+        name = "living-room-esphome"
+        connectable = True
+        connector = None
+
+        def get_allocations(self) -> Allocations:
+            return Allocations(
+                adapter=self.source,
+                slots=3,
+                free=2,
+                allocated=[TEST_ADDRESS],
+            )
+
+    local_bluez_scanner = SimpleNamespace(
+        source="00:11:22:33:44:55",
+        name="hci0",
+        connectable=True,
+        connector=None,
+        get_allocations=MagicMock(return_value=None),
+    )
+
+    with (
+        caplog.at_level(logging.WARNING),
+        patch(
+            "custom_components.xiaomi_s400_scale.coordinator.bluetooth.async_current_scanners",
+            return_value=[FakeESPHomeScanner(), local_bluez_scanner],
+        ),
+    ):
+        assert coordinator._find_orphaned_proxy_targets() == []
+        assert (
+            "Unable to resolve ESPHome API client for proxy living-room-esphome"
+            in caplog.text
+        )
+        assert "hci0" not in caplog.text
+
+        # Second call must not log a duplicate warning for the same proxy
+        caplog.clear()
+        assert coordinator._find_orphaned_proxy_targets() == []
+        assert caplog.text == ""
+
+    await coordinator.async_stop()
