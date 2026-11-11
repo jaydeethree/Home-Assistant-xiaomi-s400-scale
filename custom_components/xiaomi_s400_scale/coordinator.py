@@ -117,6 +117,7 @@ class S400Coordinator:
         self._cleanup_task: asyncio.Task[None] | None = None
         self._last_orphan_disconnect_mono: dict[str, float] = {}
         self._probed_startup_proxies: set[str] = set()
+        self._warned_unresolved_proxies: set[str] = set()
         self._unsub_bluetooth: CALLBACK_TYPE | None = None
         self._unsub_started: CALLBACK_TYPE | None = None
         self._cancel_cooldown_retry: CALLBACK_TYPE | None = None
@@ -382,6 +383,34 @@ class S400Coordinator:
 
         return None
 
+    def _is_esphome_scanner(self, scanner: bluetooth.BaseHaScanner) -> bool:
+        """Return True if the scanner is an available ESPHome Bluetooth proxy."""
+        for obj in (scanner, getattr(scanner, "connector", None)):
+            if obj is None:
+                continue
+            cls = type(obj)
+            if "esphome" in cls.__module__.lower() or "esphome" in cls.__name__.lower():
+                return True
+
+        source_norm = _normalize_mac(scanner.source)
+        for esphome_entry in self.hass.config_entries.async_loaded_entries("esphome"):
+            runtime_data = getattr(esphome_entry, "runtime_data", None)
+            if runtime_data is None or not getattr(runtime_data, "available", True):
+                continue
+            device_info = getattr(runtime_data, "device_info", None)
+            mac_candidates = (
+                esphome_entry.data.get("bluetooth_mac_address"),
+                getattr(device_info, "bluetooth_mac_address", None),
+                getattr(device_info, "mac_address", None),
+                esphome_entry.unique_id,
+            )
+            if any(
+                isinstance(mac, str) and _normalize_mac(mac) == source_norm
+                for mac in mac_candidates
+            ):
+                return True
+        return False
+
     def _find_orphaned_proxy_targets(self) -> list[_OrphanProxyTarget]:
         """Find ESPHome proxies holding an orphaned BLE connection to this scale."""
         try:
@@ -434,6 +463,17 @@ class S400Coordinator:
 
             api_client = self._get_esphome_api_client(scanner)
             if api_client is None:
+                if (
+                    scanner.source not in self._warned_unresolved_proxies
+                    and self._is_esphome_scanner(scanner)
+                ):
+                    self._warned_unresolved_proxies.add(scanner.source)
+                    _LOGGER.warning(
+                        "Unable to resolve ESPHome API client for proxy %s (%s); "
+                        "orphaned BLE session cleanup is unavailable for this proxy",
+                        scanner.name,
+                        scanner.source,
+                    )
                 continue
 
             targets.append(
