@@ -75,14 +75,13 @@ def _validate_token(raw: str, errors: dict[str, str]) -> str | None:
 
 def _is_s400_service_info(info: BluetoothServiceInfoBleak) -> bool:
     """Return True if the discovered BLE device matches a Xiaomi S400 Scale."""
-    if "s400" in (info.name or "").lower():
-        return True
     mibeacon = info.service_data.get(MIBEACON_SERVICE_UUID)
     if mibeacon is not None and len(mibeacon) >= 4:
         product_id = int.from_bytes(mibeacon[2:4], "little")
         if product_id in S400_PRODUCT_IDS:
             return True
-    return False
+    name = (info.name or "").lower()
+    return MIBEACON_SERVICE_UUID in info.service_data and "scale s400" in name
 
 
 class XiaomiS400ScaleConfigFlow(ConfigFlow, domain=DOMAIN):
