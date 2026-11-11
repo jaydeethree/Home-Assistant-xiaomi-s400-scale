@@ -18,6 +18,7 @@ Unlike passive BLE advertisement scanning (which only emits a final reading seve
 - **ESPHome Bluetooth Proxies**: Active GATT connections through ESPHome Bluetooth proxies are supported. Because the scale does not change its BLE advertisements when stepped on until a measurement is already finished, this integration maintains a persistent connection to the scale, which uses 1 active connection slot on the proxy (ESPHome proxies typically support up to 3 simultaneous active connections).
 - **Mi Home App Contention**: Because the scale only accepts one active BLE GATT connection at a time, the Mi Home mobile app and Home Assistant cannot be connected to the scale at the same time.
 - **No Offline Measurement Sync**: The scale only streams live and final readings while an authenticated BLE session is active. Weigh-ins completed while Home Assistant or your Bluetooth adapter/proxy is offline or disconnected are not replayed when the connection is restored.
+- **Multi-User Households**: `sensor.<device>_weight`, `sensor.<device>_impedance`, and `sensor.<device>_low_frequency_impedance` update on every completed weigh-in regardless of who steps on the scale, so their long-term statistics will combine readings across all users. In multi-user households, split readings per person using `event.<device>_measurement` (filtering on `profile_id` or weight range via trigger-based template sensors or [BodyMiscale](https://github.com/dckiller51/bodymiscale)).
 
 ---
 
