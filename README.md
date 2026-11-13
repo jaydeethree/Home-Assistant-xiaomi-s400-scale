@@ -1,8 +1,5 @@
 # Xiaomi S400 Scale for Home Assistant
 
-> [!WARNING]
-> **Early Work in Progress**: This integration is currently in early experimental development and is **not ready for general use yet**. Expect breaking changes, bugs, or connection quirks.
-
 A custom Home Assistant integration for the **Xiaomi Body Composition Scale S400** (model `MJTZC01YM` / `yunmai.scales.ms104`), converted from [nokistin/xiaomi-s400-live](https://github.com/nokistin/xiaomi-s400-live).
 
 Unlike passive BLE advertisement scanning (which only emits a final reading several seconds after stepping off), this integration authenticates to the scale with the Mi Home v2 protocol over BLE and streams live weight readings in real time while standing on the scale.
@@ -53,7 +50,7 @@ Because the scale requires authentication before it will stream data:
 
 ### Manual Installation
 
-1. Download or clone this repository.
+1. Download the latest release from [Releases](https://github.com/jaydeethree/Home-Assistant-xiaomi-s400-scale/releases) (or clone this repository).
 2. Copy the `custom_components/xiaomi_s400_scale` folder into your Home Assistant `<config>/custom_components/` directory.
 3. Restart Home Assistant.
 
